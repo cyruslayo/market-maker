@@ -10,8 +10,33 @@ from gspread_dataframe import set_with_dataframe
 from dotenv import load_dotenv
 from datetime import datetime
 import argparse
+import os
+import sys
+
+# Add parent directory to path to allow importing from poly_data
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from poly_data.db_utils import get_discovery_markets, get_target_markets, add_market, remove_market
 
 load_dotenv()
+
+def compute_profitability_score(df):
+    """
+    Calculate Inventory-Aware Profitability Score (Fix L1 - deduplication).
+    Rewards moderate volatility and tight spreads.
+    """
+    # Guard against missing columns
+    spread = df.get('spread', 0.1)
+    volatility = df.get('volatility_sum', 1)
+    gm_reward = df.get('gm_reward_per_100', 0)
+    daily_reward = df.get('rewards_daily_rate', 0)
+    
+    inventory_risk = spread * volatility
+    score = (
+        (gm_reward * 0.4) +
+        (daily_reward / 10 * 0.4) +
+        ((1 / (spread + 0.01)) * 0.2)
+    ) / (inventory_risk + 1)
+    return score
 
 def update_selected_markets(min_daily_reward=None, max_markets=None, replace_existing=False):
     """
@@ -22,23 +47,27 @@ def update_selected_markets(min_daily_reward=None, max_markets=None, replace_exi
         max_markets: Maximum number of markets to select (default: 5-6 for profitability, 10 for high reward)
         replace_existing: If True, replace all existing markets. If False, append.
     """
+    CORRELATION_GROUPS = {
+        'us_politics': ['election', 'trump', 'biden', 'democrat', 'republican', 'harris'],
+        'crypto':      ['bitcoin', 'ethereum', 'btc', 'eth', 'crypto'],
+        'macro':       ['fed', 'inflation', 'cpi', 'rate hike'],
+    }
+    MAX_EXPOSURE_PER_GROUP = 0.35  # No more than 35% of capital in correlated markets
     
     print("=" * 100)
     print("UPDATING SELECTED MARKETS")
     print("=" * 100)
     print()
     
-    # Connect to Google Sheets
-    spreadsheet = get_spreadsheet(read_only=False)
+    print(f"Connecting to SQLite database...")
     
-    # Load current Selected Markets
-    selected_sheet = spreadsheet.worksheet("Selected Markets")
-    current_df = pd.DataFrame(selected_sheet.get_all_records())
+    # Load current Selected Markets from SQLite
+    current_df = get_target_markets()
     
-    # Handle empty sheet
-    if len(current_df) == 0 or 'question' not in current_df.columns:
-        print("Selected Markets sheet is empty or missing columns. Starting fresh.")
-        current_df = pd.DataFrame(columns=['question', 'max_size', 'trade_size', 'param_type', 'comments', 'rationale'])
+    # Handle empty / missing columns (compatibility)
+    if current_df.empty:
+        print("Target Markets table is empty. Starting fresh.")
+        current_df = pd.DataFrame(columns=['condition_id', 'question', 'token1', 'token2', 'max_size', 'trade_size', 'param_type', 'neg_risk'])
     
     # Ensure rationale column exists for existing markets
     if 'rationale' not in current_df.columns:
@@ -51,29 +80,8 @@ def update_selected_markets(min_daily_reward=None, max_markets=None, replace_exi
             print(f"  {i+1}. {row.get('question', 'N/A')[:70]}")
     print()
     
-    # Remove outdated markets (November 11 has passed) - only if we have data
-    if len(current_df) > 0 and 'question' in current_df.columns:
-        outdated_keywords = ['November 11', 'Nov 11', '2024-11-11']
-        before_count = len(current_df)
-        
-        # Filter out outdated markets
-        current_df = current_df[
-            ~current_df['question'].str.contains('|'.join(outdated_keywords), case=False, na=False)
-        ].copy()
-        
-        removed_count = before_count - len(current_df)
-        if removed_count > 0:
-            print(f"✓ Removed {removed_count} outdated market(s)")
-        
-        # Remove Microsoft markets (wide spreads, not ideal for market making)
-        msft_markets = current_df[
-            current_df['question'].str.contains('Microsoft|MSFT', case=False, na=False)
-        ]
-        if len(msft_markets) > 0:
-            print(f"✓ Removing {len(msft_markets)} Microsoft market(s) (wide spreads)")
-            current_df = current_df[
-                ~current_df['question'].str.contains('Microsoft|MSFT', case=False, na=False)
-            ].copy()
+    # Fix L2: Removed outdated dead-date cleanup logic (Nov 2024)
+    # Rationale: Logic was hardcoded and no longer relevant.
     
     print(f"\nMarkets after cleanup: {len(current_df)}")
     
@@ -84,10 +92,9 @@ def update_selected_markets(min_daily_reward=None, max_markets=None, replace_exi
         print(f"HIGH REWARD MODE: Filtering by rewards_daily_rate >= ${min_daily_reward}")
         print("=" * 100)
         
-        # Load All Markets (has rewards_daily_rate)
-        print("\nLoading markets from 'All Markets' sheet...")
-        all_markets_sheet = spreadsheet.worksheet("All Markets")
-        source_df = pd.DataFrame(all_markets_sheet.get_all_records())
+        # Load All Markets from SQLite
+        print("\nLoading markets from SQLite 'all_markets' table...")
+        source_df = get_discovery_markets()
         
         if source_df.empty:
             print("❌ All Markets sheet is empty!")
@@ -104,39 +111,39 @@ def update_selected_markets(min_daily_reward=None, max_markets=None, replace_exi
         
         # Filter for high reward markets
         print(f"Filtering markets with rewards_daily_rate >= ${min_daily_reward}...")
-        filtered = source_df[
-            (source_df['rewards_daily_rate'] >= min_daily_reward) &
-            (source_df['rewards_daily_rate'].notna())
-        ].copy()
         
-        if len(filtered) == 0:
-            print(f"❌ No markets found with rewards_daily_rate >= ${min_daily_reward}")
-            print(f"   Highest reward: ${source_df['rewards_daily_rate'].max():.2f}")
-            return
+        # Calculate Inventory-Aware Profitability Score (Fix L1)
+        source_df['profitability_score'] = compute_profitability_score(source_df)
         
-        print(f"✓ Found {len(filtered)} markets with rewards >= ${min_daily_reward}/day\n")
+        # Get currently selected question names
+        current_questions = set(current_df['question'].tolist()) if len(current_df) > 0 else set()
         
-        # Additional quality filters
-        print("Applying quality filters...")
-        before_filter = len(filtered)
-        
+        # Applying aggressive filters
         quality_filters = (
-            (filtered['best_bid'] >= 0.1) &
-            (filtered['best_bid'] <= 0.9) &
-            (filtered['spread'] < 0.15)
+            (source_df['rewards_daily_rate'] >= min_daily_reward) &
+            (source_df['volatility_sum'] < 40) &
+            (source_df['spread'] < 0.15) &
+            (source_df['best_bid'] >= 0.05) &
+            (source_df['best_bid'] <= 0.95) &
+            (source_df['gm_reward_per_100'] >= 0.5) &
+            (~source_df['question'].isin(current_questions))
         )
         
-        if 'volatility_sum' in filtered.columns:
-            quality_filters = quality_filters & (filtered['volatility_sum'] < 50)
+        # Note: '3_hour' in the db currently represents 3-hour volatility, not volume. 
+        # Checking for '3_hour_volume' to avoid filtering out all markets if volume isn't available yet.
+        if '3_hour_volume' in source_df.columns:
+            quality_filters = quality_filters & (source_df['3_hour_volume'] >= 500)
+            
+        filtered = source_df[quality_filters].copy()
         
-        filtered = filtered[quality_filters].copy()
+        if len(filtered) == 0:
+            print(f"❌ No markets found matching criteria")
+            return
+            
+        print(f"✓ Found {len(filtered)} high-reward markets\n")
         
-        after_filter = len(filtered)
-        if before_filter > after_filter:
-            print(f"✓ Filtered to {after_filter} markets after quality checks (removed {before_filter - after_filter})\n")
-        
-        # Sort by rewards_daily_rate (descending)
-        filtered = filtered.sort_values('rewards_daily_rate', ascending=False)
+        # Sort by profitability score (descending)
+        filtered = filtered.sort_values('profitability_score', ascending=False)
         
         # Get currently selected question names (only filter if not replacing)
         if not replace_existing:
@@ -156,9 +163,9 @@ def update_selected_markets(min_daily_reward=None, max_markets=None, replace_exi
         print("PROFITABILITY MODE: Selecting markets by reward/volatility ratio")
         print("=" * 100)
         
-        # Load Volatility Markets to find better replacements
-        vol_sheet = spreadsheet.worksheet("Volatility Markets")
-        source_df = pd.DataFrame(vol_sheet.get_all_records())
+        # Load All Markets from SQLite
+        print("\nLoading markets from SQLite 'all_markets' table...")
+        source_df = get_discovery_markets()
         
         # Convert numeric columns
         numeric_cols = ['gm_reward_per_100', 'volatility_sum', 'spread', 'rewards_daily_rate',
@@ -167,26 +174,29 @@ def update_selected_markets(min_daily_reward=None, max_markets=None, replace_exi
             if col in source_df.columns:
                 source_df[col] = pd.to_numeric(source_df[col], errors='coerce')
         
-        # Calculate profitability score
-        source_df['profitability_score'] = source_df['gm_reward_per_100'] / (source_df['volatility_sum'] + 1)
+        # Calculate Inventory-Aware Profitability Score (Fix L1)
+        source_df['profitability_score'] = compute_profitability_score(source_df)
         
         # Get currently selected question names
         current_questions = set(current_df['question'].tolist()) if len(current_df) > 0 else set()
         
-        # Filter for good replacement markets:
-        # - Reward >= 1.0%
-        # - Volatility < 20
-        # - Spread < 0.1 (tighter spreads)
-        # - Price in reasonable range (0.1-0.9) - easier to manage
-        # - Not already selected
-        filtered = source_df[
-            (source_df['gm_reward_per_100'] >= 1.0) &
-            (source_df['volatility_sum'] < 20) &
-            (source_df['spread'] < 0.1) &
-            (source_df['best_bid'] >= 0.1) &
-            (source_df['best_bid'] <= 0.9) &
+        # Aggressive filters
+        quality_filters = (
+            (source_df['rewards_daily_rate'] >= 50) &
+            (source_df['volatility_sum'] < 40) &
+            (source_df['spread'] < 0.15) &
+            (source_df['best_bid'] >= 0.05) &
+            (source_df['best_bid'] <= 0.95) &
+            (source_df['gm_reward_per_100'] >= 0.5) &
             (~source_df['question'].isin(current_questions))
-        ].copy()
+        )
+        
+        # Note: '3_hour' in the db currently represents 3-hour volatility, not volume. 
+        # Checking for '3_hour_volume' to avoid filtering out all markets if volume isn't available yet.
+        if '3_hour_volume' in source_df.columns:
+            quality_filters = quality_filters & (source_df['3_hour_volume'] >= 500)
+            
+        filtered = source_df[quality_filters].copy()
         
         # Sort by profitability score
         filtered = filtered.sort_values('profitability_score', ascending=False)
@@ -196,52 +206,81 @@ def update_selected_markets(min_daily_reward=None, max_markets=None, replace_exi
         needed = max(0, target_total - len(current_df))
     
     if needed > 0:
-        replacements = filtered.head(needed)
-        
         print(f"\n{'=' * 100}")
-        print(f"ADDING {len(replacements)} NEW MARKETS:")
+        print(f"ADDING UP TO {needed} NEW MARKETS:")
         print("=" * 100)
         
         # Prepare new market data
         new_markets = []
-        for _, row in replacements.iterrows():
+        current_portfolio = current_df.to_dict('records')
+        total_capital = sum(float(m.get('max_size', 0)) for m in current_portfolio if pd.notna(m.get('max_size')))
+        
+        for _, row in filtered.iterrows():
+            if len(new_markets) >= needed:
+                break
             reward = row.get('gm_reward_per_100', 0)
             volatility = row.get('volatility_sum', 0)
             daily_reward = row.get('rewards_daily_rate', 0)
             min_size = row.get('min_size', 50)
             
-            # Determine trade parameters based on market characteristics
-            # For high reward markets, use larger sizes
-            if min_daily_reward and daily_reward >= 200:
+            # Tiered sizing based on conviction
+            if daily_reward >= 300 and volatility < 20:
+                trade_size = 200
+                max_size = 500
+                param_type = 'max_aggressive'
+            elif daily_reward >= 150:
                 trade_size = 100
-                max_size = 200
+                max_size = 300
                 param_type = 'aggressive'
-            elif min_daily_reward and daily_reward >= 150:
-                trade_size = 80
-                max_size = 160
-                param_type = 'aggressive'
-            elif volatility > 15:
+            elif daily_reward >= 75:
+                trade_size = 60
+                max_size = 150
+                param_type = 'moderate'
+            else:
                 trade_size = 30
-                max_size = 60
-                param_type = 'aggressive'
-            elif volatility > 10:
-                trade_size = 40
                 max_size = 80
                 param_type = 'default'
+            
+            # Fix H3: Ramp-up (25% size) ONLY if market is actually new.
+            # If it's already in the DB, it has graduated beyond the ramp-up phase.
+            is_new = row['condition_id'] not in current_df['condition_id'].values if not current_df.empty else True
+            
+            if is_new:
+                print(f"   🌱 New market detected: applying 25% ramp-up size")
+                trade_size = max(int(trade_size * 0.25), min_size)
+                max_size = max(int(max_size * 0.25), trade_size * 2)
             else:
-                trade_size = 50
-                max_size = 100
-                param_type = 'conservative'
-            
-            # Adjust for very high reward markets (percentage-based)
-            if reward > 2.0:
-                trade_size = min(trade_size + 10, 60)
-                max_size = min(max_size + 20, 120)
-            
+                print(f"   📈 Existing market detected: using full {param_type} sizing")
+
             # Ensure trade_size >= min_size
             if trade_size < min_size:
                 trade_size = min_size
                 max_size = max(trade_size * 2, max_size)
+                
+            # Check correlation limits before adding
+            projected_total_capital = total_capital + max_size
+            is_valid = True
+            
+            if projected_total_capital > 0:
+                for group, keywords in CORRELATION_GROUPS.items():
+                    if any(kw in str(row['question']).lower() for kw in keywords):
+                        group_exposure = max_size + sum(
+                            float(m.get('max_size', 0)) for m in current_portfolio 
+                            if pd.notna(m.get('max_size')) and m.get('max_size') != '' and
+                               any(kw in str(m.get('question', '')).lower() for kw in keywords)
+                        )
+                        # Avoid instant rejection when portfolio is small by assuming a $2500 minimum intended portfolio size
+                        effective_total = max(projected_total_capital, 2500)
+                        if group_exposure / effective_total > MAX_EXPOSURE_PER_GROUP:
+                            is_valid = False
+                            print(f"Skipping {row['question'][:50]}... due to correlation limit on {group}")
+                            break
+                            
+            if not is_valid:
+                continue
+                
+            total_capital += max_size
+            current_portfolio.append({'question': row['question'], 'max_size': max_size})
             
             # Generate detailed rationale
             rationale_parts = []
@@ -299,11 +338,13 @@ def update_selected_markets(min_daily_reward=None, max_markets=None, replace_exi
             
             new_markets.append({
                 'question': row['question'],
+                'condition_id': row['condition_id'],
+                'token1': row['token1'],
+                'token2': row['token2'],
                 'max_size': max_size,
                 'trade_size': trade_size,
                 'param_type': param_type,
-                'comments': comments,
-                'rationale': rationale
+                'neg_risk': row.get('neg_risk', False)
             })
             
             print(f"\n{len(new_markets)}. {row['question'][:75]}")
@@ -332,6 +373,11 @@ def update_selected_markets(min_daily_reward=None, max_markets=None, replace_exi
             updated_df = current_df
             print("\nNo replacements needed - already have enough good markets")
     
+    # Ensure rationale and comments columns exist to avoid KeyErrors
+    for col in ['rationale', 'comments']:
+        if col not in updated_df.columns:
+            updated_df[col] = ''
+    
     # Update existing markets with rationale if missing
     # Merge with vol_df to get current metrics for existing markets
     if len(updated_df) > 0:
@@ -344,8 +390,8 @@ def update_selected_markets(min_daily_reward=None, max_markets=None, replace_exi
             # Match with vol_df to get metrics
             for idx, row in updated_df.iterrows():
                 if pd.isna(row.get('rationale', '')) or row.get('rationale', '') == '':
-                    # Find matching market in vol_df
-                    match = vol_df[vol_df['question'] == row['question']]
+                    # Find matching market in source_df
+                    match = source_df[source_df['question'] == row['question']]
                     if len(match) > 0:
                         m = match.iloc[0]
                         reward = m['gm_reward_per_100']
@@ -382,8 +428,8 @@ def update_selected_markets(min_daily_reward=None, max_markets=None, replace_exi
                         
                         updated_df.at[idx, 'rationale'] = " | ".join(rationale_parts) if rationale_parts else f"Reward: {reward:.2f}%, Vol: {volatility:.1f}"
     
-    # Ensure all required columns are present
-    required_cols = ['question', 'max_size', 'trade_size', 'param_type', 'comments', 'rationale']
+    # Ensure all required columns are present for SQLite sync and display
+    required_cols = ['condition_id', 'question', 'token1', 'token2', 'max_size', 'trade_size', 'param_type', 'neg_risk', 'rationale']
     for col in required_cols:
         if col not in updated_df.columns:
             updated_df[col] = ''
@@ -391,48 +437,40 @@ def update_selected_markets(min_daily_reward=None, max_markets=None, replace_exi
     # Reorder columns
     updated_df = updated_df[required_cols]
     
-    # Update sheet using the same method as data_updater.py
+    # Update the SQLite database
     print(f"\n{'=' * 100}")
-    print("UPDATING SELECTED MARKETS SHEET...")
+    print("UPDATING SQLite DATABASE...")
     print("=" * 100)
     
-    # Use the same update method as data_updater.py to avoid permission issues
     try:
-        # Get existing sheet dimensions
-        all_values = selected_sheet.get_all_values()
-        existing_num_rows = len(all_values)
-        existing_num_cols = len(all_values[0]) if all_values else 0
+        # If replace_existing, we should probably clear the table first
+        # But for safety, we'll just remove markets that are no longer in updated_df
+        # Or better yet, use a clear/batch insert if supported by db_utils
         
-        num_rows, num_cols = updated_df.shape
-        max_rows = max(num_rows + 1, existing_num_rows)  # +1 for header
-        max_cols = max(num_cols, existing_num_cols)
+        if replace_existing:
+            # Simple way: get current, remove all
+            current_ids = get_target_markets()['condition_id'].tolist()
+            for cid in current_ids:
+                remove_market(cid)
+            print(f"✓ Cleared existing markets (replace=True)")
+
+        # Sync updated_df to target_markets
+        for _, row in updated_df.iterrows():
+            add_market(
+                condition_id=row['condition_id'],
+                question=row['question'],
+                token1=row['token1'],
+                token2=row['token2'],
+                max_size=row['max_size'],
+                trade_size=row['trade_size'],
+                param_type=row['param_type'],
+                neg_risk=row['neg_risk'] == 'TRUE' if isinstance(row['neg_risk'], str) else bool(row['neg_risk'])
+            )
         
-        # Prepare data with padding
-        padded_data = pd.DataFrame('', index=range(max_rows), columns=range(max_cols))
-        # Add headers
-        for j, col in enumerate(updated_df.columns):
-            padded_data.iloc[0, j] = col
-        # Add data
-        padded_data.iloc[1:num_rows+1, :num_cols] = updated_df.values
-        
-        # Convert to list of lists for gspread
-        values = padded_data.values.tolist()
-        
-        # Update the sheet
-        selected_sheet.update('A1', values)
-        print(f"✓ Successfully updated sheet with {num_rows} rows and {num_cols} columns")
+        print(f"✓ Successfully updated SQLite with {len(updated_df)} target markets")
     except Exception as e:
-        print(f"Error updating sheet: {e}")
-        # Fallback: try set_with_dataframe without resize
-        try:
-            from gspread_dataframe import set_with_dataframe
-            # Manually set values to avoid resize
-            selected_sheet.clear()
-            selected_sheet.update([updated_df.columns.values.tolist()] + updated_df.values.tolist())
-            print("✓ Updated using fallback method")
-        except Exception as e2:
-            print(f"Fallback also failed: {e2}")
-            raise
+        print(f"Error updating SQLite: {e}")
+        raise
     
     print(f"\n✓ SUCCESS! Updated Selected Markets")
     print(f"\nFinal market list ({len(updated_df)} markets):")

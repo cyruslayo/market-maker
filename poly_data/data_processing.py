@@ -108,12 +108,12 @@ async def process_data(json_datas, trade=True):
                 # Rate limit trading on price changes to reduce order churn
                 if trade:
                     current_time = time.time()
-                    last_action = global_state.last_trade_action_time.get(asset, 0)
+                    last_action = global_state.get_last_trade_action_time_atomic(asset)
                     time_since_last_action = current_time - last_action
 
                     # Only trigger trading if 30 seconds have passed since last action
                     if time_since_last_action >= 30:
-                        global_state.last_trade_action_time[asset] = current_time
+                        global_state.set_last_trade_action_time_atomic(asset, current_time)
                         logger.info(f"Triggering trade for {asset} after {time_since_last_action:.1f}s cooldown")
                         await asyncio.create_task(perform_trade(asset))
                     else:
@@ -212,8 +212,8 @@ async def process_user_data(json_data):
                                 'status': 'FAILED',
                                 'token_id': token,
                                 'neg_risk': False,  # Will be determined from market data
-                                'position_before': global_state.positions.get(str(token), {}).get('size', 0),
-                                'position_after': global_state.positions.get(str(token), {}).get('size', 0),
+                                'position_before': global_state.get_position_atomic(str(token)).get('size', 0),
+                                'position_after': global_state.get_position_atomic(str(token)).get('size', 0),
                                 'notes': 'Trade failed'
                             })
                         except Exception as e:
@@ -228,9 +228,9 @@ async def process_user_data(json_data):
                         try:
                             from poly_data.trade_logger import log_trade_to_sheets
                             from datetime import datetime
-                            pos_before = global_state.positions.get(str(token), {}).get('size', 0)
+                            pos_before = global_state.get_position_atomic(str(token)).get('size', 0)
                             update_positions()  # Update positions first
-                            pos_after = global_state.positions.get(str(token), {}).get('size', 0)
+                            pos_after = global_state.get_position_atomic(str(token)).get('size', 0)
                             log_trade_to_sheets({
                                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                                 'action': side.upper(),
@@ -253,7 +253,7 @@ async def process_user_data(json_data):
                     add_to_performing(col, row.get('id'))
                     logger.info(f"Matched. Performing is {len(global_state.performing.get(col, set()))}")
                     set_position(token, side, size, price)
-                    logger.info(f"Position after matching is {global_state.positions.get(str(token), {})}")
+                    logger.info(f"Position after matching is {global_state.get_position_atomic(str(token))}")
                     logger.info(f"Last trade update is {global_state.last_trade_update}")
                     logger.info(f"Performing is {global_state.performing}")
                     logger.info(f"Performing timestamps is {global_state.performing_timestamps}")

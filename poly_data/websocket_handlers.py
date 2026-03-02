@@ -74,6 +74,34 @@ async def connect_market_websocket(chunk, max_retries=5, retry_delay=5):
                                 if json_data['market'] not in chunk:
                                     logger.warning(f"Ignoring data for unsubscribed market: {json_data['market']}")
                                     continue
+                                
+                                # ====== PAPER TRADING ENGINE HOOK ======
+                                if hasattr(global_state.client, 'matching_engine'):
+                                    try:
+                                        m_id = json_data['market']
+                                        b_bid = None
+                                        b_ask = None
+                                        l_trade = None
+                                        
+                                        # Process new price_changes
+                                        changes = json_data.get('price_changes') or json_data.get('changes', [])
+                                        for data in changes:
+                                            price = float(data['price'])
+                                            if data['side'] == 'BUY':
+                                                if b_bid is None or price > b_bid:
+                                                    b_bid = price
+                                            else:
+                                                if b_ask is None or price < b_ask:
+                                                    b_ask = price
+                                                    
+                                        if b_bid is not None or b_ask is not None:
+                                            global_state.client.matching_engine.process_market_update(
+                                                market_id=m_id, best_bid=b_bid, best_ask=b_ask, last_trade_price=l_trade
+                                            )
+                                    except Exception as e:
+                                        logger.error(f"Paper Trading Engine Hook failed: {e}")
+                                # =======================================
+
                             # Wrap single dictionary in a list for process_data
                             if isinstance(json_data, dict):
                                 await process_data([json_data])

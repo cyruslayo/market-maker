@@ -1,5 +1,4 @@
 import poly_data.global_state as global_state
-import poly_data.global_state as global_state
 from poly_data.utils import get_sheet_df
 import time
 import pandas as pd
@@ -11,10 +10,7 @@ def update_positions(avgOnly=False):
     for idx, row in pos_df.iterrows():
         asset = str(row['asset'])
 
-        if asset in  global_state.positions:
-            position = global_state.positions[asset].copy()
-        else:
-            position = {'size': 0, 'avgPrice': 0}
+        position = global_state.get_position_atomic(asset)
 
         position['avgPrice'] = row['avgPrice']
 
@@ -42,14 +38,10 @@ def update_positions(avgOnly=False):
                 else:
                     print(f"ALERT: Skipping update for {asset} because there are trades pending for {col} looking like {global_state.performing[col]}")
     
-        global_state.positions[asset] = position
+        global_state.update_positions_atomic({asset: position})
 
 def get_position(token):
-    token = str(token)
-    if token in global_state.positions:
-        return global_state.positions[token]
-    else:
-        return {'size': 0, 'avgPrice': 0}
+    return global_state.get_position_atomic(token)
 
 def set_position(token, side, size, price, source='websocket'):
     token = str(token)
@@ -61,33 +53,37 @@ def set_position(token, side, size, price, source='websocket'):
     if side.lower() == 'sell':
         size *= -1
 
-    if token in global_state.positions:
-        
-        prev_price = global_state.positions[token]['avgPrice']
-        prev_size = global_state.positions[token]['size']
+    position_exists = global_state.has_position_atomic(token)
+    current_position = global_state.get_position_atomic(token)
+    prev_price = current_position['avgPrice']
+    prev_size = current_position['size']
 
-
-        if size > 0:
-            if prev_size == 0:
-                # Starting a new position
-                avgPrice_new = price
-            else:
-                # Buying more; update average price
-                avgPrice_new = (prev_price * prev_size + price * size) / (prev_size + size)
-        elif size < 0:
-            # Selling; average price remains the same
-            avgPrice_new = prev_price
+    if size > 0:
+        if prev_size == 0:
+            # Starting a new position
+            avgPrice_new = price
         else:
-            # No change in position
-            avgPrice_new = prev_price
+            # Buying more; update average price
+            avgPrice_new = (prev_price * prev_size + price * size) / (prev_size + size)
 
-
-        global_state.positions[token]['size'] += size
-        global_state.positions[token]['avgPrice'] = avgPrice_new
+    elif size < 0:
+        # Selling; average price remains the same
+        avgPrice_new = prev_price
     else:
-        global_state.positions[token] = {'size': size, 'avgPrice': price}
+        # No change in position
+        avgPrice_new = prev_price
 
-    print(f"Updated position from {source}, set to ", global_state.positions[token])
+    if position_exists:
+        updated_position = {
+            'size': current_position['size'] + size,
+            'avgPrice': avgPrice_new,
+        }
+    else:
+        updated_position = {'size': size, 'avgPrice': price}
+
+    global_state.update_positions_atomic({token: updated_position})
+
+    print(f"Updated position from {source}, set to ", updated_position)
 
 def update_orders():
     all_orders = global_state.client.get_all_orders()
@@ -118,21 +114,20 @@ def update_orders():
                             orders[str(token)][type]['price'] = float(curr.iloc[0]['price'])
                             orders[str(token)][type]['size'] = float(curr.iloc[0]['original_size'] - curr.iloc[0]['size_matched'])
 
-    global_state.orders = orders
+    global_state.replace_orders_atomic(orders)
 
 def get_order(token):
     token = str(token)
-    if token in global_state.orders:
+    orders_snapshot = global_state.get_orders_snapshot_atomic()
+    current = orders_snapshot.get(token, {'buy': {'price': 0, 'size': 0}, 'sell': {'price': 0, 'size': 0}})
 
-        if 'buy' not in global_state.orders[token]:
-            global_state.orders[token]['buy'] = {'price': 0, 'size': 0}
+    if 'buy' not in current:
+        current['buy'] = {'price': 0, 'size': 0}
 
-        if 'sell' not in global_state.orders[token]:
-            global_state.orders[token]['sell'] = {'price': 0, 'size': 0}
+    if 'sell' not in current:
+        current['sell'] = {'price': 0, 'size': 0}
 
-        return global_state.orders[token]
-    else:
-        return {'buy': {'price': 0, 'size': 0}, 'sell': {'price': 0, 'size': 0}}
+    return current
     
 def set_order(token, side, size, price):
     curr = {}
@@ -141,7 +136,7 @@ def set_order(token, side, size, price):
     curr[side]['size'] = float(size)
     curr[side]['price'] = float(price)
 
-    global_state.orders[str(token)] = curr
+    global_state.update_orders_atomic({str(token): curr})
     print("Updated order, set to ", curr)
 
 

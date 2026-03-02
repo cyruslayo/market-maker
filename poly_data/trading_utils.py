@@ -14,6 +14,12 @@ import poly_data.global_state as global_state
 
 load_dotenv()
 
+# OFI (Order Flow Imbalance) constants for adaptive spread model
+OFI_IMBALANCE_THRESHOLD = 0.7
+OFI_ALPHA_WIDE = 1.8
+OFI_ALPHA_NORMAL = 1.0
+
+
 def get_clob_client():
     host = "https://clob.polymarket.com"
     key = os.getenv("PK")
@@ -161,20 +167,34 @@ def get_reward_optimized_price(mid_price, max_spread, tick_size, side='buy'):
     return optimal_price
 
 
-def get_order_prices(best_bid, best_bid_size, top_bid,  best_ask, best_ask_size, top_ask, avgPrice, row):
+def get_order_prices(best_bid, best_bid_size, top_bid, best_ask, best_ask_size, top_ask, avgPrice, row):
     """
     Calculate optimal bid and ask prices considering:
     1. Current order book state
     2. Polymarket reward optimization
     3. Market liquidity
+    4. Order Flow Imbalance (OFI) adaptive spread
     """
 
     # Calculate mid price for reward optimization
     mid_price = (top_bid + top_ask) / 2
 
-    # Get reward-optimized prices
-    reward_bid = get_reward_optimized_price(mid_price, row['max_spread'], row['tick_size'], 'buy')
-    reward_ask = get_reward_optimized_price(mid_price, row['max_spread'], row['tick_size'], 'sell')
+    # Compute Order Flow Imbalance (OFI) from queue depth
+    total_depth = best_bid_size + best_ask_size
+    imbalance = (best_bid_size - best_ask_size) / total_depth if total_depth > 0 else 0
+
+    # Determine alpha multipliers based on imbalance direction
+    alpha_bid = OFI_ALPHA_WIDE if imbalance < -OFI_IMBALANCE_THRESHOLD else OFI_ALPHA_NORMAL
+    alpha_ask = OFI_ALPHA_WIDE if imbalance > OFI_IMBALANCE_THRESHOLD else OFI_ALPHA_NORMAL
+
+    # Calculate adaptive optimal distances (base 0.12 multiplier from research)
+    v = row['max_spread'] / 100
+    bid_optimal_distance = v * 0.12 * alpha_bid
+    ask_optimal_distance = v * 0.12 * alpha_ask
+
+    # Compute reward-optimized prices with adaptive spread
+    reward_bid = round_to_tick(mid_price - bid_optimal_distance, row['tick_size'])
+    reward_ask = round_to_tick(mid_price + ask_optimal_distance, row['tick_size'])
 
     # Start with competitive prices (just inside best bid/ask)
     bid_price = best_bid + row['tick_size']
@@ -216,6 +236,21 @@ def get_order_prices(best_bid, best_bid_size, top_bid,  best_ask, best_ask_size,
 
 
 
+def round_to_tick(price, tick_size):
+    """
+    Round price to nearest tick size.
+
+    Args:
+        price (float): Price to round
+        tick_size (float): Minimum price increment
+
+    Returns:
+        float: Price rounded to tick_size
+    """
+    rounded = round(price / tick_size) * tick_size
+    decimals = len(str(tick_size).split('.')[1]) if '.' in str(tick_size) else 0
+    return round(rounded, decimals)
+
 
 def round_down(number, decimals):
     factor = 10 ** decimals
@@ -225,14 +260,27 @@ def round_up(number, decimals):
     factor = 10 ** decimals
     return math.ceil(number * factor) / factor
 
-def get_buy_sell_amount(position, bid_price, row, other_token_position=0):
+def dynamic_max_size(base_size, volatility, reward, spread):
+    # Scale inverse to volatility, direct to reward/spread ratio
+    kelly_scalar = (reward / (spread + 0.01)) / (volatility + 1)
+    # Cap the multiplier between 0.5x and 2.0x of base size
+    multiplier = min(max(kelly_scalar, 0.5), 2.0)
+    return int(base_size * multiplier)
+
+def get_buy_sell_amount(position, bid_price, row, max_size, other_token_position=0):
     import os
     buy_amount = 0
     sell_amount = 0
 
-    # Get max_size, defaulting to trade_size if not specified
-    max_size = row.get('max_size', row['trade_size'])
-    trade_size = row['trade_size']
+    base_max = row.get('max_size', row.get('trade_size', 50))
+    # Using the passed-in max_size instead of recalculating
+    # This avoids M2 (double counting)
+    # Scale trade_size proportionally based on the provided max_size vs base_max
+    
+    # Scale trade_size proportionally
+    trade_size = int(row.get('trade_size', 25) * (max_size / base_max)) if base_max > 0 else row.get('trade_size', 25)
+    if trade_size < row.get('min_size', 5):
+        trade_size = row.get('min_size', 5)
     
     # Check if two-sided market making mode is enabled
     TWO_SIDED_MARKET_MAKING = os.getenv('TWO_SIDED_MARKET_MAKING', 'false').lower() == 'true'

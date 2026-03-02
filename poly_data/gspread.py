@@ -8,10 +8,17 @@ import json
 load_dotenv()
 
 def get_spreadsheet():
-    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds = Credentials.from_service_account_file("credentials.json", scopes=scope)
-    client = gspread.authorize(creds)
-    return client.open_by_url(os.getenv("SPREADSHEET_URL"))
+    try:
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_file("credentials.json", scopes=scope)
+        client = gspread.authorize(creds)
+        spreadsheet_url = os.getenv("SPREADSHEET_URL")
+        if not spreadsheet_url:
+            return None
+        return client.open_by_url(spreadsheet_url)
+    except Exception as e:
+        print(f"Warning: Could not connect to Google Sheets ({e}). Returning None.")
+        return None
 
 def test_gspread():
     try:

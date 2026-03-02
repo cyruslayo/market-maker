@@ -1,0 +1,207 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.3, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\AI2026\market-maker\polymarket-automated-mm
+plugins: anyio-4.12.1, asyncio-1.3.0, mock-3.15.1
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests\test_market_update_integration.py F                                [100%]
+
+================================== FAILURES ===================================
+_________ TestMarketUpdateIntegration.test_market_selection_pipeline __________
+
+self = Index(['question', 'max_size'], dtype='str'), key = 'condition_id'
+
+    def get_loc(self, key):
+        """
+        Get integer location, slice or boolean mask for requested label.
+    
+        Parameters
+        ----------
+        key : label
+            The key to check its location if it is present in the index.
+    
+        Returns
+        -------
+        int if unique index, slice if monotonic index, else mask
+            Integer location, slice or boolean mask.
+    
+        See Also
+        --------
+        Index.get_slice_bound : Calculate slice bound that corresponds to
+            given label.
+        Index.get_indexer : Computes indexer and mask for new index given
+            the current index.
+        Index.get_non_unique : Returns indexer and masks for new index given
+            the current index.
+        Index.get_indexer_for : Returns an indexer even when non-unique.
+    
+        Examples
+        --------
+        >>> unique_index = pd.Index(list("abc"))
+        >>> unique_index.get_loc("b")
+        1
+    
+        >>> monotonic_index = pd.Index(list("abbc"))
+        >>> monotonic_index.get_loc("b")
+        slice(1, 3, None)
+    
+        >>> non_monotonic_index = pd.Index(list("abcb"))
+        >>> non_monotonic_index.get_loc("b")
+        array([False,  True, False,  True])
+        """
+        casted_key = self._maybe_cast_indexer(key)
+        try:
+>           return self._engine.get_loc(casted_key)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+C:\Users\Cyrus\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\indexes\base.py:3641: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+pandas/_libs/index.pyx:168: in pandas._libs.index.IndexEngine.get_loc
+    ???
+pandas/_libs/index.pyx:197: in pandas._libs.index.IndexEngine.get_loc
+    ???
+pandas/_libs/hashtable_class_helper.pxi:7668: in pandas._libs.hashtable.PyObjectHashTable.get_item
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+>   ???
+E   KeyError: 'condition_id'
+
+pandas/_libs/hashtable_class_helper.pxi:7676: KeyError
+
+The above exception was the direct cause of the following exception:
+
+self = <test_market_update_integration.TestMarketUpdateIntegration testMethod=test_market_selection_pipeline>
+mock_remove = <MagicMock name='remove_market' id='1637765860048'>
+mock_add = <MagicMock name='add_market' id='1637765861056'>
+mock_get_target = <MagicMock name='get_target_markets' id='1637765861728'>
+mock_get_discovery = <MagicMock name='get_discovery_markets' id='1637765862064'>
+
+    @patch('update_selected_markets.get_discovery_markets')
+    @patch('update_selected_markets.get_target_markets')
+    @patch('update_selected_markets.add_market')
+    @patch('update_selected_markets.remove_market')
+    def test_market_selection_pipeline(self, mock_remove, mock_add, mock_get_target, mock_get_discovery):
+        """Test the market selection pipeline with filtering and correlation limits"""
+    
+        # Mock currently selected markets (empty)
+        current_df = pd.DataFrame(columns=['question', 'max_size'])
+        mock_get_target.return_value = current_df
+    
+        # Source markets
+        source_df = pd.DataFrame([
+            {
+                'question': 'Will Bitcoin hit 100k?',
+                'rewards_daily_rate': 100,
+                'volatility_sum': 20,
+                'spread': 0.05,
+                'best_bid': 0.50,
+                'gm_reward_per_100': 1.0,
+                '3_hour_volume': 1000,
+                'min_size': 50
+            },
+            {
+                'question': 'Will Ethereum hit 5k?',
+                'rewards_daily_rate': 90,
+                'volatility_sum': 20,
+                'spread': 0.05,
+                'best_bid': 0.50,
+                'gm_reward_per_100': 0.9,
+                '3_hour_volume': 1000,
+                'min_size': 50
+            },
+            {
+                'question': 'Will crypto ETF be approved?',
+                'rewards_daily_rate': 80,
+                'volatility_sum': 20,
+                'spread': 0.05,
+                'best_bid': 0.50,
+                'gm_reward_per_100': 0.8,
+                '3_hour_volume': 1000,
+                'min_size': 50
+            },
+            {
+                'question': 'Who will win US election?',
+                'rewards_daily_rate': 70,
+                'volatility_sum': 20,
+                'spread': 0.05,
+                'best_bid': 0.50,
+                'gm_reward_per_100': 0.7,
+                '3_hour_volume': 1000,
+                'min_size': 50
+            }
+        ])
+        mock_get_discovery.return_value = source_df
+    
+        # Call function - should process markets without crashing
+>       update_selected_markets.update_selected_markets(replace_existing=True)
+
+tests\test_market_update_integration.py:69: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+update_selected_markets.py:457: in update_selected_markets
+    current_ids = get_target_markets()['condition_id'].tolist()
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\Cyrus\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\frame.py:4378: in __getitem__
+    indexer = self.columns.get_loc(key)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = Index(['question', 'max_size'], dtype='str'), key = 'condition_id'
+
+    def get_loc(self, key):
+        """
+        Get integer location, slice or boolean mask for requested label.
+    
+        Parameters
+        ----------
+        key : label
+            The key to check its location if it is present in the index.
+    
+        Returns
+        -------
+        int if unique index, slice if monotonic index, else mask
+            Integer location, slice or boolean mask.
+    
+        See Also
+        --------
+        Index.get_slice_bound : Calculate slice bound that corresponds to
+            given label.
+        Index.get_indexer : Computes indexer and mask for new index given
+            the current index.
+        Index.get_non_unique : Returns indexer and masks for new index given
+            the current index.
+        Index.get_indexer_for : Returns an indexer even when non-unique.
+    
+        Examples
+        --------
+        >>> unique_index = pd.Index(list("abc"))
+        >>> unique_index.get_loc("b")
+        1
+    
+        >>> monotonic_index = pd.Index(list("abbc"))
+        >>> monotonic_index.get_loc("b")
+        slice(1, 3, None)
+    
+        >>> non_monotonic_index = pd.Index(list("abcb"))
+        >>> non_monotonic_index.get_loc("b")
+        array([False,  True, False,  True])
+        """
+        casted_key = self._maybe_cast_indexer(key)
+        try:
+            return self._engine.get_loc(casted_key)
+        except KeyError as err:
+            if isinstance(casted_key, slice) or (
+                isinstance(casted_key, abc.Iterable)
+                and any(isinstance(x, slice) for x in casted_key)
+            ):
+                raise InvalidIndexError(key) from err
+>           raise KeyError(key) from err
+E           KeyError: 'condition_id'
+
+C:\Users\Cyrus\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pandas\core\indexes\base.py:3648: KeyError
+---------------------------- Captured stdout call -----------------------------
+====================================================================================================\nUPDATING SELECTED MARKETS\n====================================================================================================\n\nConnecting to SQLite database...\nTarget Markets table is empty. Starting fresh.\nCurrent markets: 0\n\n\nMarkets after cleanup: 0\n\n====================================================================================================\nPROFITABILITY MODE: Selecting markets by reward/volatility ratio\n====================================================================================================\n\nLoading markets from SQLite 'all_markets' table...\n\n====================================================================================================\nADDING UP TO 5 NEW MARKETS:\n====================================================================================================\nSkipping Will Bitcoin hit 100k?... due to correlation limit on crypto\nSkipping Will Ethereum hit 5k?... due to correlation limit on crypto\nSkipping Will crypto ETF be approved?... due to correlation limit on crypto\nSkipping Who will win US election?... due to correlation limit on us_politics\n\n\u2713 Replacing all markets with 0 high-reward markets\n\n====================================================================================================\nUPDATING SQLite DATABASE...\n====================================================================================================\nError updating SQLite: 'condition_id'
+=========================== short test summary info ===========================
+FAILED tests/test_market_update_integration.py::TestMarketUpdateIntegration::test_market_selection_pipeline
+============================== 1 failed in 1.73s ==============================

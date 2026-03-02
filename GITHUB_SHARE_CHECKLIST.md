@@ -25,14 +25,14 @@ poly_data/utils.py
 poly_data/websocket_handlers.py
 poly_data/abis.py
 poly_data/polymarket_client.py
-poly_data/gspread.py
+poly_data/polymarket_client.py
 ```
 
 ### **Data Updater Module** (`data_updater/`)
 ```
 data_updater/data_updater.py
 data_updater/find_markets.py
-data_updater/google_utils.py
+data_updater/find_markets.py
 data_updater/trading_utils.py
 data_updater/erc20ABI.json
 ```
@@ -42,7 +42,7 @@ data_updater/erc20ABI.json
 cancel_all_orders.py
 check_positions.py
 approve_and_trade.py
-export_trades_to_sheets.py
+approve_and_trade.py
 update_hyperparameters.py
 validate_polymarket_bot.py
 check_market_config.py
@@ -87,7 +87,7 @@ poly_merger/safeAbi.js
 poly_stats/__init__.py
 poly_stats/account_stats.py
 poly_utils/__init__.py
-poly_utils/google_utils.py
+poly_utils/__init__.py
 ```
 
 ### **Documentation**
@@ -121,8 +121,7 @@ All dependencies are safe to share:
 - `py-clob-client==0.20.0` - Polymarket client
 - `python-dotenv==1.0.0` - Environment variables
 - `pandas` - Data processing
-- `gspread` - Google Sheets API
-- `gspread-dataframe` - Google Sheets DataFrame integration
+- `pandas` - Data processing
 - `sortedcontainers` - Data structures
 - `eth-account>=0.11.0` - Ethereum account management
 - `eth-utils>=4.0.0` - Ethereum utilities
@@ -152,7 +151,6 @@ All dependencies are safe to share:
 ```
 .env                    ❌ Contains private keys, wallet addresses
 .env.*                  ❌ Any environment files
-credentials.json        ❌ Google Service Account credentials
 ```
 
 ### **Log Files**
@@ -215,7 +213,6 @@ Before pushing to GitHub:
 
 1. ✅ Check `.gitignore` includes:
    - `.env`
-   - `credentials.json`
    - `*.log`
    - `data/`
    - `data_updater/data/`
@@ -269,7 +266,7 @@ poly-maker/
 
 **Total Safe Scripts:** ~50+ Python scripts + Node.js files
 **Dependencies:** All in `requirements.txt` and `package.json` are safe
-**Exclusions:** `.env`, `credentials.json`, `*.log`, `data/`, `positions/`
+**Exclusions:** `.env`, `*.log`, `data/`, `positions/`
 
 All code reads secrets from environment variables - no hardcoded credentials!
 

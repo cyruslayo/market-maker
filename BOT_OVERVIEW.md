@@ -49,8 +49,8 @@
         └─────────────┬───────┴───────┬─────────────┘
                       │               │
            ┌──────────▼──────┐  ┌─────▼─────────┐
-           │ Google Sheets   │  │  Polymarket   │
-           │ (Config/Data)   │  │   (Trading)   │
+           │     SQLite      │  │  Polymarket   │
+           │ (polymarket.db) │  │   (Trading)   │
            └─────────────────┘  └───────────────┘
 ```
 
@@ -82,10 +82,10 @@ main.py starts
     │
     ├─► Initialize PolymarketClient (connect to API)
     │
-    ├─► Load markets from Google Sheets
-    │       - "Selected Markets" tab (what to trade)
-    │       - "All Markets" tab (market metadata)
-    │       - "Hyperparameters" tab (trading parameters)
+    ├─► Load markets from SQLite
+    │       - `target_markets` table (what to trade)
+    │       - `all_markets` table (market metadata)
+    │       - `hyperparameters` table (trading parameters)
     │
     ├─► Fetch current positions from Polymarket API
     │
@@ -175,12 +175,12 @@ Start → Initialize Client → Load Data → Start WebSockets → Run Forever
   - Tick size (minimum price increment)
   - Low-price multipliers
 
-**`get_buy_sell_amount(row, token_id, position)`**
-- Determines how much to buy/sell
+**`get_buy_sell_amount(row, token_id, position, max_size)`**
+- Determines how much to buy/sell based on rewards and limits.
 - Logic:
-  - **Building position:** Buy up to max_size
-  - **At max_size:** Switch to exit mode
-  - **Have position:** Sell at profit
+  - **Dynamic Sizing:** Uses `dynamic_max_size` to scale exposure [0.5x, 2.0x] based on volatility.
+  - **Inventory Skew:** Applies a price offset when inventory exceeds 40% of `max_size` to hasten exits.
+  - **Ramp-Up:** New markets are throttled to 25% size until proven stable in the database.
 
 **Market Locks:**
 ```python
@@ -238,7 +238,7 @@ async with market_locks[condition_id]:
 - Calls trading logic when data changes
 
 #### **data_utils.py**
-- `update_markets()` - Load from Google Sheets
+- `update_markets()` - Load from SQLite
 - `update_positions()` - Fetch from Polymarket API
 - `update_orders()` - Fetch current orders
 
@@ -299,7 +299,7 @@ client.merge_positions(
 **Scripts:**
 - `data_updater.py` - Fetch all Polymarket markets
 - `find_markets.py` - Calculate rewards and volatility
-- Updates "All Markets" Google Sheet hourly
+- Updates `all_markets` SQLite table hourly
 
 **Should run separately** (ideally different IP) to avoid rate limits
 
@@ -389,9 +389,9 @@ if price_diff > 0.005 OR size_diff > 0.10:
 
 ## Configuration
 
-### Google Sheets Structure
+### SQLite Database Structure
 
-**1. Selected Markets Tab**
+**1. target_markets table**
 ```
 ┌────────────────────────┬──────────┬────────────┬──────────────┬──────────┐
 │ question               │ max_size │ trade_size │ param_type   │ comments │
@@ -401,7 +401,7 @@ if price_diff > 0.005 OR size_diff > 0.10:
 └────────────────────────┴──────────┴────────────┴──────────────┴──────────┘
 ```
 
-**2. All Markets Tab** (auto-updated by data_updater)
+**2. all_markets table** (auto-updated by data_updater)
 ```
 ┌────────────┬────────┬────────┬──────────┬─────────┬──────┬────────┐
 │ question   │ token1 │ token2 │ best_bid │ best_ask│ ...  │ rewards│
@@ -410,7 +410,7 @@ if price_diff > 0.005 OR size_diff > 0.10:
 └────────────┴────────┴────────┴──────────┴─────────┴──────┴────────┘
 ```
 
-**3. Hyperparameters Tab**
+**3. hyperparameters table**
 ```
 ┌──────────────────────┬─────────────────────┬───────┐
 │ type                 │ param               │ value │
@@ -431,8 +431,7 @@ PK=0xabc123...
 # Your wallet address (matches the private key!)
 BROWSER_ADDRESS=0x1234...
 
-# Google Sheets URL
-SPREADSHEET_URL=https://docs.google.com/spreadsheets/d/...
+# Polygon RPC (optional)
 
 # Polygon RPC (optional)
 POLYGON_RPC_URL=https://polygon-rpc.com
@@ -444,18 +443,16 @@ POLYGON_RPC_URL=https://polygon-rpc.com
 
 ### 1. Stop Loss
 
-**Triggers when:**
-```python
-pnl = (current_price - avg_price) / avg_price * 100
+**Triggers when loss thresholds or volatility limits are hit:**
 
-# Condition 1: Loss exceeds threshold
-if pnl < stop_loss_threshold AND spread <= spread_threshold:
-    trigger_stop_loss()
+- **Tiered Stop-Loss (Spread-Anchored):**
+  - **Tier 1 (0.5x Spread loss):** Underwater by half a spread. Reduces sell size by 50% to minimize exposure.
+  - **Tier 2 (1.0x Spread loss):** Underwater by full spread. Exits full position and triggers a sleep cooldown.
+  - **Tier 3 (2.0x Spread loss):** Emergency exit. Uses limit orders with a 5% slippage guard to prevent dumping into thin liquidity.
 
-# Condition 2: Volatility too high
-if volatility_3h > volatility_threshold:
-    trigger_stop_loss()
-```
+- **Adaptive Volatility Filter:**
+  - High-reward markets are granted higher volatility thresholds (`base_vol + reward_bonus`).
+  - Trading halts globally if portfolio-wide drawdown exceeds 5% in 24 hours.
 
 **What happens:**
 1. Sell entire position at best bid
@@ -523,10 +520,10 @@ if reverse_position > min_size:
 
 ```bash
 # 1. Configure environment
-vim .env  # Set PK, BROWSER_ADDRESS, SPREADSHEET_URL
+vim .env  # Set PK, BROWSER_ADDRESS
 
-# 2. Select markets in Google Sheets
-# Edit "Selected Markets" tab
+# 2. Select markets via CLI
+# Auto-select or manually add to local SQLite DB
 
 # 3. Start bot
 python main.py
@@ -550,7 +547,7 @@ tail -f websocket_handlers.log
 ### Updating Market Selection
 
 ```bash
-# 1. Edit Google Sheets "Selected Markets" tab
+# 1. Refresh target markets using update_selected_markets.py
 # 2. Bot will auto-reload every 60 seconds
 # 3. Or restart: Ctrl+C → python main.py
 ```
@@ -575,9 +572,8 @@ python check_positions.py
 2. Bot reloads automatically
 
 **Change risk parameters:**
-1. Edit "Hyperparameters" tab
-2. Modify `stop_loss_threshold`, `take_profit_threshold`, etc.
-3. Bot reloads automatically
+1. Use `python manage_markets.py hyper [type] [param] [value]`
+2. Bot reloads automatically
 
 ---
 
@@ -692,7 +688,7 @@ poly-maker-prod/
 │
 ├── data_updater/
 │   ├── data_updater.py        # Market data collector
-│   └── google_utils.py        # Google Sheets helper
+│   └── google_utils.py        # Legacy helper (deprecated)
 │
 ├── positions/                 # Risk-off state files
 │   └── {condition_id}.json    # Per-market sleep state
@@ -775,7 +771,7 @@ Used to detect opposing positions.
 Before running with real money:
 
 - [ ] Test with small amounts first
-- [ ] Verify Google Sheets configuration
+- [ ] Verify SQLite database configuration
 - [ ] Check USDC approval is set
 - [ ] Monitor for 24 hours with small positions
 - [ ] Understand stop-loss behavior

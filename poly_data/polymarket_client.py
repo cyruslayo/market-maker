@@ -1,5 +1,7 @@
 from dotenv import load_dotenv
 import os
+import asyncio
+import logging
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import OrderArgs, BalanceAllowanceParams, AssetType, PartialCreateOrderOptions
 from py_clob_client.constants import POLYGON
@@ -14,10 +16,10 @@ from eth_account import Account
 import requests
 import pandas as pd
 import json
-import subprocess
 from poly_data.abis import NegRiskAdapterABI, ConditionalTokenABI, erc20_abi
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 class PolymarketClient:
     def __init__(self, pk='default') -> None:
@@ -194,13 +196,94 @@ class PolymarketClient:
     def cancel_all_market(self, marketId):
         self.client.cancel_market_orders(market=marketId)
 
-    def merge_positions(self, amount_to_merge, condition_id, is_neg_risk_market):
-        amount_to_merge_str = str(amount_to_merge)
-        node_command = f'node poly_merger/merge.js {amount_to_merge_str} {condition_id} {"true" if is_neg_risk_market else "false"}'
-        print(node_command)
-        result = subprocess.run(node_command, shell=True, capture_output=True, text=True)
-        if result.returncode != 0:
-            print("Error:", result.stderr)
-            raise Exception(f"Error in merging positions: {result.stderr}")
-        print("Done merging")
-        return result.stdout
+    async def merge_positions(self, amount_to_merge: float, condition_id: str, is_neg_risk_market: bool) -> str:
+        """
+        Merge YES and NO positions to recover USDC collateral.
+        
+        This is a native Python async implementation that replaces the previous
+        Node.js external script approach, eliminating P99 latency spikes.
+        
+        Args:
+            amount_to_merge: Amount to merge in USDC (e.g., 25.5 for 25.5 USDC)
+            condition_id: The market's condition ID (hex string)
+            is_neg_risk_market: Whether this is a negative risk market
+            
+        Returns:
+            Transaction hash as hex string, or None on failure
+        """
+        try:
+            # Convert amount to raw units (1 USDC = 1_000_000 raw units)
+            raw_amount = int(amount_to_merge * 1_000_000)
+            
+            # Get nonce from pending transactions to avoid collisions
+            nonce = await asyncio.get_event_loop().run_in_executor(
+                None, 
+                lambda: self.web3.eth.get_transaction_count(self.browser_wallet, 'pending')
+            )
+            
+            # Get current gas price
+            gas_price = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self.web3.eth.gas_price
+            )
+            
+            # Convert condition_id to bytes32 format
+            # Handle both 0x-prefixed and raw hex strings
+            condition_id_clean = condition_id.replace('0x', '')
+            condition_id_bytes = bytes.fromhex(condition_id_clean.rjust(64, '0'))
+            
+            # Build transaction based on market type
+            if is_neg_risk_market:
+                # NegRiskAdapter path
+                contract = self.neg_risk_adapter
+                tx = contract.functions.mergePositions(
+                    condition_id_bytes,
+                    raw_amount
+                ).build_transaction({
+                    'from': self.browser_wallet,
+                    'nonce': nonce,
+                    'gas': 1_000_000,
+                    'gasPrice': gas_price,
+                    'chainId': 137
+                })
+            else:
+                # Standard ConditionalTokens path
+                # parentCollectionId is bytes32(0) for top-level markets
+                parent_collection_id = b'\x00' * 32
+                collateral_address = self.addresses['collateral']
+                partition = [1, 2]  # Standard partition for binary markets
+                
+                contract = self.conditional_tokens
+                tx = contract.functions.mergePositions(
+                    collateral_address,
+                    parent_collection_id,
+                    condition_id_bytes,
+                    partition,
+                    raw_amount
+                ).build_transaction({
+                    'from': self.browser_wallet,
+                    'nonce': nonce,
+                    'gas': 1_000_000,
+                    'gasPrice': gas_price,
+                    'chainId': 137
+                })
+            
+            # Sign transaction
+            signed_tx = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self.web3.eth.account.sign_transaction(tx, self.key)
+            )
+            
+            # Send raw transaction
+            tx_hash = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self.web3.eth.send_raw_transaction(signed_tx.rawTransaction)
+            )
+            
+            tx_hash_hex = tx_hash.hex()
+            logger.info(f"Merge transaction sent: {tx_hash_hex} for condition_id={condition_id}, amount={amount_to_merge}")
+            return tx_hash_hex
+            
+        except Exception as e:
+            logger.error(f"Failed to merge positions for condition_id={condition_id}: {e}")
+            return None

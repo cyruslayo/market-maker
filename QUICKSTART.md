@@ -1,46 +1,52 @@
-# =� Quick Start Guide
+# = Quick Start Guide
 
 ## Prerequisites
 
-1.  Python 3.8+ installed
-2.  `.env` file configured with:
+1.   Python 3.8+ installed
+2.   `.env` file configured with:
    - `PK` (Private key)
    - `BROWSER_ADDRESS` (Wallet address)
-   - `SPREADSHEET_URL` (Google Sheets URL)
-3.  `credentials.json` (Google service account) in project root
-4.  Google Sheets with proper structure (see CLAUDE.md)
+3.   SQLite Database generated with `manage_markets.py init`
+4.   Basic understanding of Polymarket (see CLAUDE.md)
 
 ---
 
 ## Option 1: Fully Automated Setup (Recommended) >
 
-### Step 1: Install Dependencies
+### Step 1: Initialize SQL Database
+The bot uses a local SQLite database (`polymarket.db`) for market configuration.
 ```bash
-pip install -r requirements.txt
+python manage_markets.py init
 ```
 
-### Step 2: Start Everything
+### Step 2: Start Market Discovery
+Run the data updater to continuously fetch market metrics (rewards, volume, etc.).
 ```bash
-# Terminal 1: Data updater (fetches market data continuously)
 python data_updater/data_updater.py
+```
 
-# Terminal 2: Trading Bot
+### Step 3: Select Advanced Trading Targets
+Use the high-reward auto-selector to pick the best markets.
+```bash
+# Example: Select top 5 markets with $100+ daily rewards
+python update_selected_markets.py --min-reward 100 --max-markets 5 --replace
+```
+
+### Step 4: Start Trading Bot
+```bash
 python main.py
 ```
 
-### Step 3: Access Dashboard
-Open browser to: **http://localhost:8501**
-
 ---
 
-## Option 2: Manual Step-by-Step =�
+## Option 2: Manual Step-by-Step =
 
 ### Step 1: Update Market Data
 ```bash
 # This fetches all Polymarket markets and calculates rewards
 python update_markets.py
 ```
-� Takes ~5-10 minutes to complete
+ Takes ~5-10 minutes to complete
 
 ### Step 2: Select Markets
 ```bash
@@ -51,7 +57,7 @@ python select_markets.py --top 5 --min-reward 0.75 --max-volatility 20
 Or use the dashboard:
 ```bash
 streamlit run dashboard.py
-# Go to "Market Selection" tab � set parameters � click "Auto-Select Markets"
+# Go to "Market Selection" tab  set parameters  click "Auto-Select Markets"
 ```
 
 ### Step 3: Start Trading
@@ -66,7 +72,7 @@ tail -f main.log
 
 ---
 
-## Option 3: One-Time Data Update =�
+## Option 3: One-Time Data Update =
 
 If you just want to update market data once without scheduling:
 
@@ -76,6 +82,25 @@ python data_updater/data_updater.py
 
 # Then select markets
 python update_selected_markets.py
+```
+
+---
+
+## Testing: Paper Trading
+
+Run the bot against the live Polymarket order book in a safe, simulated environment to test quoting and risk management strategies without risking real capital.
+
+### Standard Paper Trading
+Run the paper trading engine indefinitely, simulating real bot behavior with a local matching engine:
+```bash
+python paper_main.py
+```
+*Note: Press `Ctrl+C` to stop and view the final paper trading latency and slippage report.*
+
+### Paper Trading Gauntlet
+Run a time-boxed gauntlet session (e.g. 48 hours) to stress-test your configuration across various market scenarios:
+```bash
+python run_extreme_papertrade.py --hours 48
 ```
 
 ---
@@ -167,17 +192,17 @@ python main.py &
 
 ## Troubleshooting
 
-### "No markets in Volatility Markets sheet"
-� Run `python update_markets.py` first
+### "No markets found in SQLite"
+ Run `python data_updater/data_updater.py` first
 
 ### "Bot not starting"
-� Check `.env` file has `PK`, `BROWSER_ADDRESS`, `SPREADSHEET_URL`
+ Check `.env` file has `PK`, `BROWSER_ADDRESS`
 
 ### "Orders being cancelled too often"
-� Check main.log - rate limiting should show "cooldown" messages
+ Check main.log - rate limiting should show "cooldown" messages
 
 ### "No reward data in dashboard"
-� Bot must run for 5+ minutes first
+ Bot must run for 5+ minutes first
 
 ### "Dashboard won't load"
 � `pip install streamlit plotly psutil`
@@ -188,7 +213,7 @@ python main.py &
 
 1. Read `IMPROVEMENTS.md` for detailed feature documentation
 2. Read `CLAUDE.md` for trading logic details
-3. Customize parameters in Google Sheets "Hyperparameters" tab
+3. Customize parameters using `python manage_markets.py hyper`
 4. Set up Discord webhook for notifications (optional)
 
 ---

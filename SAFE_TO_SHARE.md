@@ -30,12 +30,12 @@ This document lists all files that are **SAFE** to include in a public GitHub re
 - `poly_data/websocket_handlers.py` - WebSocket handlers
 - `poly_data/abis.py` - Contract ABIs (public data)
 - `poly_data/polymarket_client.py` - Client (reads from .env, no hardcoded keys)
-- `poly_data/gspread.py` - Google Sheets integration (reads credentials.json from file system, not hardcoded)
+- `poly_data/gspread.py` - Legacy integration (deprecated)
 
 ### Data Updater Module (`data_updater/`)
 - `data_updater/data_updater.py` - Main data updater (reads from .env)
 - `data_updater/find_markets.py` - Market discovery
-- `data_updater/google_utils.py` - Google Sheets utilities (reads credentials.json)
+- `data_updater/google_utils.py` - Legacy utilities (deprecated)
 - `data_updater/trading_utils.py` - Trading utilities
 - `data_updater/erc20ABI.json` - Public contract ABI
 
@@ -43,8 +43,8 @@ This document lists all files that are **SAFE** to include in a public GitHub re
 - `cancel_all_orders.py` - Cancel orders (reads from .env)
 - `check_positions.py` - Check positions (reads from .env)
 - `approve_and_trade.py` - Approve and trade (reads from .env)
-- `export_trades_to_sheets.py` - Export trades (reads from .env)
-- `update_hyperparameters.py` - Update hyperparameters (reads from .env)
+- `export_trades_to_sheets.py` - Export trades (legacy)
+- `update_hyperparameters.py` - Update hyperparameters (reads from local DB)
 - `validate_polymarket_bot.py` - Validation script (reads from .env, USDC_ADDRESS is public contract address)
 
 ### Analysis Scripts
@@ -81,7 +81,7 @@ This document lists all files that are **SAFE** to include in a public GitHub re
 - `poly_stats/__init__.py`
 - `poly_stats/account_stats.py` - Account statistics
 - `poly_utils/__init__.py`
-- `poly_utils/google_utils.py` - Google utilities
+- `poly_utils/google_utils.py` - Legacy Google utilities (deprecated)
 
 ### Documentation
 - `README.md` - Main documentation
@@ -107,7 +107,7 @@ This document lists all files that are **SAFE** to include in a public GitHub re
 ### Environment & Credentials
 - `.env` - **NEVER SHARE** - Contains private keys, API keys, wallet addresses
 - `.env.*` - Any environment files
-- `credentials.json` - **NEVER SHARE** - Google Service Account credentials
+- `credentials.json` - **NEVER SHARE** - Legacy Google Service Account credentials (if exists)
 
 ### Log Files
 - `*.log` - **DO NOT SHARE** - May contain sensitive data, errors, addresses
@@ -176,7 +176,7 @@ node_modules/
 Before pushing to GitHub, verify:
 
 - [ ] No `.env` file is included
-- [ ] No `credentials.json` is included
+- [ ] No `credentials.json` is included (if exists)
 - [ ] No `*.log` files are included
 - [ ] No hardcoded private keys in any `.py` files
 - [ ] No hardcoded wallet addresses (except public contract addresses like USDC)
@@ -209,9 +209,8 @@ Before pushing to GitHub, verify:
 ## 📝 **Notes**
 
 - All Python scripts use `os.getenv()` or `load_dotenv()` to read secrets from `.env`
-- Google Sheets credentials are read from `credentials.json` file (not hardcoded)
 - Contract addresses (like USDC) are public and safe to share
-- The code is designed to be secure when `.env` and `credentials.json` are excluded
+- The code is designed to be secure when `.env` is excluded
 
 ---
 
@@ -222,7 +221,6 @@ Before pushing to GitHub, verify:
    ```
    PK=your_private_key_here
    BROWSER_ADDRESS=your_wallet_address_here
-   SPREADSHEET_URL=your_spreadsheet_url_here
    POLYGON_RPC_URL=https://polygon-rpc.com
    ```
 3. Ensure `.gitignore` excludes sensitive files

@@ -10,12 +10,14 @@ from io import StringIO
 from dotenv import load_dotenv
 import concurrent.futures
 import numpy as np
-from google.oauth2.service_account import Credentials
-import gspread
-from gspread_dataframe import set_with_dataframe
+# google.oauth2, gspread, gspread_dataframe moved to lazy imports to fix ModuleNotFoundError
 import urllib.parse
 import logging
 from datetime import datetime
+import sys
+# Add parent directory to path to allow importing from poly_data
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from poly_data.db_utils import save_all_markets
 
 # Configure logging
 logging.basicConfig(
@@ -54,8 +56,8 @@ def get_spreadsheet(read_only=False):
     logger.info("Attempting to access spreadsheet")
     spreadsheet_url = os.getenv("SPREADSHEET_URL")
     if not spreadsheet_url:
-        logger.error("SPREADSHEET_URL environment variable not set")
-        raise ValueError("SPREADSHEET_URL environment variable is not set")
+        logger.warning("SPREADSHEET_URL environment variable not set. Sheets integration disabled.")
+        return None
     creds_file = 'credentials.json' if os.path.exists('credentials.json') else '../credentials.json'
     logger.info(f"Checking for credentials file at: {creds_file}")
     if not read_only and os.path.exists(creds_file):
@@ -65,6 +67,13 @@ def get_spreadsheet(read_only=False):
                 service_account_email = creds_data.get('client_email', 'unknown')
                 logger.info(f"Using Service Account: {service_account_email}")
             scope = ["https://www.googleapis.com/auth/spreadsheets"]
+            try:
+                from google.oauth2.service_account import Credentials
+                import gspread
+            except ImportError:
+                logger.error("Google Sheets libraries not installed. Please run: pip install gspread google-auth")
+                return ReadOnlySpreadsheet(spreadsheet_url)
+
             credentials = Credentials.from_service_account_file(creds_file, scopes=scope)
             client = gspread.authorize(credentials)
             spreadsheet = client.open_by_url(spreadsheet_url)
@@ -148,7 +157,7 @@ def get_all_markets(client):
             cursor = markets['next_cursor']
             all_markets.append(markets_df)
             logger.info(f"Fetched market page with {len(markets_df)} markets, next_cursor: {cursor}")
-            if cursor is None:
+            if cursor is None or cursor == "LTE=":
                 break
         except Exception as e:
             logger.error(f"Error fetching markets page: {e}", exc_info=True)
@@ -303,7 +312,7 @@ def process_single_row(row, client):
     ret['condition_id'] = row['condition_id']
     return ret
 
-def get_all_results(all_df, client, max_workers=5):
+def get_all_results(all_df, client, max_workers=20):
     logger.info("Processing all market results")
     all_results = []
     def process_with_progress(args):
@@ -353,7 +362,7 @@ def add_volatility(row):
         price_df = pd.DataFrame(res.json()['history'])
         price_df['t'] = pd.to_datetime(price_df['t'], unit='s')
         price_df['p'] = price_df['p'].round(2)
-        price_df.to_csv(f'data/{row["token1"]}.csv', index=False)
+        # price_df.to_csv(f'data/{row["token1"]}.csv', index=False)
         price_df['log_return'] = np.log(price_df['p'] / price_df['p'].shift(1))
         row_dict = row.copy()
         stats = {
@@ -443,6 +452,12 @@ def update_sheet(data, worksheet, filename):
         num_rows, num_cols = data.shape
         max_rows = max(num_rows, existing_num_rows)
         max_cols = max(num_cols, existing_num_cols)
+        try:
+            from gspread_dataframe import set_with_dataframe
+        except ImportError:
+            logger.error("gspread-dataframe not installed. Saving to fallback.")
+            raise ImportError("gspread-dataframe missing")
+            
         padded_data = pd.DataFrame('', index=range(max_rows), columns=range(max_cols))
         padded_data.iloc[:num_rows, :num_cols] = data.values
         padded_data.columns = list(data.columns) + [''] * (max_cols - num_cols)
@@ -536,6 +551,13 @@ def fetch_and_process_data():
         update_sheet(new_df, wk_all, 'data/all_markets.csv')
         update_sheet(volatility_df, wk_vol, 'data/volatility_markets.csv')
         update_sheet(m_data, wk_full, 'data/full_markets.csv')
+        
+        # Save to SQLite
+        try:
+            save_all_markets(new_df)
+            logger.info("Successfully synced market data to SQLite")
+        except Exception as sqlite_err:
+            logger.error(f"Failed to sync to SQLite: {sqlite_err}")
         logger.info("Top 10 Markets (by gm_reward_per_100):")
         logger.info("\n" + new_df.head(10).to_string(index=False))
     except Exception as e:

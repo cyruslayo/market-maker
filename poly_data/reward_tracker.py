@@ -8,23 +8,31 @@ import poly_data.global_state as global_state
 from poly_data.gspread import get_spreadsheet
 import traceback
 
+FEE_CURVE_PARAMS = {
+    'crypto': {'exponent': 2, 'fee_rate': 0.25},
+    'other':  {'exponent': 1, 'fee_rate': 0.0175},
+}
+
 _reward_worksheet = None
 _reward_spreadsheet = None
 _last_snapshot_time = {}
 
 
-def estimate_order_reward(price, size, mid_price, max_spread, daily_rate):
-    """Estimate maker rewards for a single order based on Polymarket's formula."""
+def estimate_order_reward(price, size, mid_price=None, max_spread=None, daily_rate=None, market_type='other'):
+    """Estimate maker fee-equivalent reward using 2026 fee-curve weighted formula.
+    
+    Note: mid_price, max_spread, and daily_rate are deprecated and unused.
+    They are kept for backwards compatibility with existing callers.
+    """
     try:
-        s = abs(price - mid_price)
-        v = max_spread / 100
-        if v == 0:
-            return 0
-        S = ((v - s) / v) ** 2
-        Q = S * size
-        hourly_rate = daily_rate / 24
-        estimated_reward = (Q / (Q + 1000)) * hourly_rate
-        return max(0, estimated_reward)
+        key = 'crypto' if 'crypto' in str(market_type).lower() else 'other'
+        params = FEE_CURVE_PARAMS[key]
+        exponent = params['exponent']
+        fee_rate = params['fee_rate']
+
+        p = price
+        fee_equivalent = size * p * fee_rate * (p * (1 - p)) ** exponent
+        return max(0.0, fee_equivalent)
     except Exception as e:
         print(f"Error calculating reward: {e}")
         return 0
@@ -51,6 +59,9 @@ def log_market_snapshot(market_id, market_name):
 
         if _reward_spreadsheet is None:
             _reward_spreadsheet = get_spreadsheet()
+            if _reward_spreadsheet is None:
+                # Silently fail if sheets are not configured (e.g. credentials missing)
+                return
 
         if _reward_worksheet is None:
             try:
@@ -62,8 +73,8 @@ def log_market_snapshot(market_id, market_name):
                 headers = [
                     'Timestamp', 'Market', 'Token', 'Side', 'Open Orders',
                     'Order Price', 'Mid Price', 'Distance from Mid',
-                    'Position Size', 'Est. Hourly Reward ($)', 'Daily Rate',
-                    'Max Spread %', 'Status'
+                    'Position Size', 'Est. Fee Equivalent', 'Daily Rate',
+                    'Max Spread %', 'Status', 'Market Type'
                 ]
                 _reward_worksheet.update('A1', [headers])
 
@@ -79,6 +90,11 @@ def log_market_snapshot(market_id, market_name):
         else:
             mid_price = 0.5
 
+        market_type = str(market_row.get('market_type', market_row.get('category', 'other')))
+        # Warn if falling back to default - helps detect column name changes
+        if 'market_type' not in market_row and 'category' not in market_row:
+            print(f"Warning: No market_type or category column found for {market_name}, defaulting to 'other'")
+
         for token_name in ['token1', 'token2']:
             token_id = str(market_row[token_name])
             answer = market_row['answer1'] if token_name == 'token1' else market_row['answer2']
@@ -88,7 +104,8 @@ def log_market_snapshot(market_id, market_name):
             if orders['buy']['size'] > 0:
                 buy_reward = estimate_order_reward(
                     orders['buy']['price'], orders['buy']['size'], mid_price,
-                    market_row['max_spread'], market_row['rewards_daily_rate']
+                    market_row['max_spread'], market_row['rewards_daily_rate'],
+                    market_type=market_type
                 )
                 # Convert all values to native Python types for JSON serialization
                 row = [
@@ -97,14 +114,15 @@ def log_market_snapshot(market_id, market_name):
                     float(orders['buy']['price']), float(mid_price),
                     float(abs(orders['buy']['price'] - mid_price)), float(position['size']),
                     float(round(buy_reward, 4)), float(market_row['rewards_daily_rate']),
-                    float(market_row['max_spread']), 'Active'
+                    float(market_row['max_spread']), 'Active', str(market_type)
                 ]
                 _reward_worksheet.append_row(row, value_input_option='USER_ENTERED')
 
             if orders['sell']['size'] > 0:
                 sell_reward = estimate_order_reward(
                     orders['sell']['price'], orders['sell']['size'], mid_price,
-                    market_row['max_spread'], market_row['rewards_daily_rate']
+                    market_row['max_spread'], market_row['rewards_daily_rate'],
+                    market_type=market_type
                 )
                 # Convert all values to native Python types for JSON serialization
                 row = [
@@ -113,7 +131,7 @@ def log_market_snapshot(market_id, market_name):
                     float(orders['sell']['price']), float(mid_price),
                     float(abs(orders['sell']['price'] - mid_price)), float(position['size']),
                     float(round(sell_reward, 4)), float(market_row['rewards_daily_rate']),
-                    float(market_row['max_spread']), 'Active'
+                    float(market_row['max_spread']), 'Active', str(market_type)
                 ]
                 _reward_worksheet.append_row(row, value_input_option='USER_ENTERED')
 

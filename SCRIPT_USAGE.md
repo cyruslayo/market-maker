@@ -7,9 +7,12 @@ These scripts are part of the main bot execution flow:
 ### Primary Entry Points
 - **`main.py`** ⭐ - Main bot entry point, orchestrates WebSocket connections and periodic updates
 - **`trading.py`** ⭐ - Core trading logic (`perform_trade` function), order placement, position management
-- **`update_markets.py`** - Updates market data from Google Sheets (called periodically by main.py)
-- **`data_updater/data_updater.py`** - Fetches all Polymarket markets, calculates metrics, updates Google Sheets
-- **`update_selected_markets.py`** - Auto-selects profitable markets and populates "Selected Markets" tab
+- **`update_markets.py`** - Updates market data from SQLite (called periodically by main.py)
+- **`data_updater/data_updater.py`** - Fetches all Polymarket markets, calculates metrics, updates SQLite
+- **`update_selected_markets.py`** - Auto-selects profitable markets from SQLite and updates the target markets.
+  - `--min-reward`: Filter by minimum daily reward (e.g. 100).
+  - `--max-markets`: Maximum number of markets to track.
+  - `--replace`: Clear existing target markets before adding new ones.
 
 ### Supporting Modules (Used by Core Scripts)
 - **`poly_data/polymarket_client.py`** - Polymarket API client
@@ -19,11 +22,11 @@ These scripts are part of the main bot execution flow:
 - **`poly_data/trading_utils.py`** - Trading utility functions (price calculation, order sizing)
 - **`poly_data/global_state.py`** - Global state management
 - **`poly_data/CONSTANTS.py`** - Constants and configuration
-- **`poly_data/trade_logger.py`** - Logs trades to Google Sheets
+- **`poly_data/trade_logger.py`** - Logs trades locally / to database
 - **`poly_data/reward_tracker.py`** - Tracks maker rewards
 - **`poly_data/position_snapshot.py`** - Logs position snapshots
 - **`poly_data/utils.py`** - General utilities
-- **`data_updater/google_utils.py`** - Google Sheets utilities
+- **`data_updater/google_utils.py`** - Legacy utilities (deprecated)
 - **`data_updater/trading_utils.py`** - Trading utilities for data updater
 - **`data_updater/find_markets.py`** - Market discovery functions
 - **`poly_merger/merge.js`** - Node.js script for position merging (called by Python)
@@ -37,8 +40,8 @@ These scripts are useful for administration and monitoring but not part of the m
 - **`cancel_all_orders.py`** - Cancel all open orders (manual intervention)
 - **`check_positions.py`** - Check current positions across all markets
 - **`approve_and_trade.py`** - Approve token spending and place a trade
-- **`export_trades_to_sheets.py`** - Export trade history to Google Sheets
-- **`update_hyperparameters.py`** - Update trading parameters in Google Sheets
+- **`export_trades_to_sheets.py`** - Export trade history (legacy script)
+- **`update_hyperparameters.py`** - Update trading parameters in SQLite
 - **`validate_polymarket_bot.py`** - Validate bot configuration and connectivity
 
 ---
@@ -75,7 +78,7 @@ These scripts may be outdated or have unclear usage:
 - **`check_market_config.py`** - Check market configuration
 - **`update_stats.py`** - Update statistics (unclear if actively used)
 - **`dashboard_old.py`** - Old dashboard version (likely deprecated)
-- **`poly_data/gspread.py`** - Google Sheets utility (may be redundant with `data_updater/google_utils.py`)
+- **`poly_data/gspread.py`** - Legacy utility (deprecated)
 
 ---
 
@@ -100,12 +103,13 @@ main.py
 data_updater/data_updater.py (run separately)
   ├─→ Fetches all markets from Polymarket API
   ├─→ Calculates metrics (rewards, volatility, etc.)
-  └─→ Updates Google Sheets ("All Markets", "Volatility Markets")
+  └─→ Updates local SQLite DB
 
 update_selected_markets.py (run manually)
-  ├─→ Reads from "All Markets" sheet
-  ├─→ Filters by profitability/rewards
-  └─→ Updates "Selected Markets" sheet
+  ├─→ Reads from SQLite 'all_markets' table
+  ├─→ Calculates rewards, volatility, and profitability
+  ├─→ Applies correlation limits and ramp-up logic
+  └─→ Updates SQLite 'target_markets' table
 ```
 
 ### Position Merging Flow:
@@ -154,6 +158,6 @@ python check_positions.py
 - Scripts marked with ⭐ are critical for bot operation
 - Test scripts should never be run in production
 - Utility scripts are safe to run but don't affect the main bot flow
-- The bot reads from Google Sheets ("Selected Markets" tab) for which markets to trade
-- The bot writes to Google Sheets ("Trade Log", "Maker Rewards") for logging
+- The bot reads from SQLite (`target_markets` table) for which markets to trade
+- The bot writes to local logs/database for trade logging
 

@@ -21,14 +21,9 @@ cd ..
 
 # Set up environment variables
 cp .env.example .env  # If you create a .env.example file
-# Or create .env manually with:
 # PK=your_private_key_here
 # BROWSER_ADDRESS=your_wallet_address_here
-# SPREADSHEET_URL=your_spreadsheet_url_here
-
-# Set up Google Sheets credentials
-# Download credentials.json from Google Cloud Console
-# Place it in the project root
+# POLYGON_RPC_URL=https://polygon-rpc.com
 
 # Run the bot
 python main.py
@@ -72,7 +67,6 @@ cd ~/poly-maker-clean
 
 # 2. Copy all safe files (using rsync to exclude sensitive files)
 rsync -av --exclude='.env' \
-          --exclude='credentials.json' \
           --exclude='*.log' \
           --exclude='data/' \
           --exclude='data_updater/data/' \
@@ -108,7 +102,6 @@ git clone /Users/terrylee/PycharmProjects/PythonProject/poly-maker-prod poly-mak
 
 # Method 2: Using rsync (excludes sensitive files automatically via .gitignore patterns)
 rsync -av --exclude='.env' \
-          --exclude='credentials.json' \
           --exclude='*.log' \
           --exclude='data/' \
           --exclude='data_updater/data/' \
@@ -160,7 +153,6 @@ if [ ! -f .env ]; then
     cat > .env << EOF
 PK=your_private_key_here
 BROWSER_ADDRESS=your_wallet_address_here
-SPREADSHEET_URL=your_spreadsheet_url_here
 POLYGON_RPC_URL=https://polygon-rpc.com
 TWO_SIDED_MARKET_MAKING=false
 AGGRESSIVE_MODE=false
@@ -170,22 +162,17 @@ else
     echo "✅ .env file found"
 fi
 
-# Check for credentials.json
-if [ ! -f credentials.json ]; then
-    echo "⚠️  credentials.json not found. Please download from Google Cloud Console."
-else
-    echo "✅ credentials.json found"
-fi
+# Create SQLite database
+python manage_markets.py init
 
 echo ""
 echo "✅ Setup complete!"
 echo ""
 echo "Next steps:"
 echo "1. Edit .env with your credentials"
-echo "2. Add credentials.json from Google Cloud Console"
-echo "3. Run: python update_markets.py"
-echo "4. Run: python update_selected_markets.py"
-echo "5. Run: python main.py"
+echo "2. Run: python data_updater/data_updater.py"
+echo "3. Run: python update_selected_markets.py"
+echo "4. Run: python main.py"
 ```
 
 Make it executable:
@@ -202,10 +189,10 @@ Before pushing to GitHub, verify:
 ```bash
 # 1. Check .gitignore is working
 git status
-# Should NOT show: .env, credentials.json, *.log, data/, positions/
+# Should NOT show: .env, *.log, data/, positions/
 
 # 2. Verify no sensitive files in staging
-git diff --cached --name-only | grep -E "\.env|credentials|\.log"
+git diff --cached --name-only | grep -E "\.env|\.log"
 
 # 3. Check for hardcoded secrets (should return nothing)
 grep -r "0x[a-fA-F0-9]\{64\}" . --exclude-dir=.git
@@ -230,11 +217,10 @@ git init
 ```bash
 # Add to .gitignore
 echo ".env" >> .gitignore
-echo "credentials.json" >> .gitignore
 echo "*.log" >> .gitignore
 
 # Remove from git cache (if already tracked)
-git rm --cached .env credentials.json *.log
+git rm --cached .env *.log
 ```
 
 ### Issue: Large files (data directories)
@@ -260,10 +246,7 @@ cat > .env.example << EOF
 PK=your_private_key_here
 BROWSER_ADDRESS=your_wallet_address_here
 
-# Google Sheets
-SPREADSHEET_URL=your_spreadsheet_url_here
-
-# Optional
+# Database / Network
 POLYGON_RPC_URL=https://polygon-rpc.com
 TWO_SIDED_MARKET_MAKING=false
 AGGRESSIVE_MODE=false
@@ -284,7 +267,7 @@ git push origin main
 cd /tmp
 git clone https://github.com/yourusername/poly-maker.git test-clone
 cd test-clone
-# Verify no .env, credentials.json, or log files
-ls -la | grep -E "\.env|credentials|\.log"
+# Verify no .env or log files
+ls -la | grep -E "\.env|\.log"
 ```
 
