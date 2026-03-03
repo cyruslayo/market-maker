@@ -288,11 +288,13 @@ async def perform_trade(market):
             for detail in deets:
                 token = int(detail['token'])
                 orders = get_order_from_state(token)
-                
+
                 # Market Depth
-                book_deets = get_best_bid_ask_deets(market, detail['name'], 100, 0.1)
+                # Bug 1 fix: all_data is keyed by individual token IDs, not condition_id.
+                # Pass the specific token for this outcome side so the book lookup hits the right key.
+                book_deets = get_best_bid_ask_deets(str(token), detail['name'], 100, 0.1)
                 if book_deets['best_bid'] is None:
-                    book_deets = get_best_bid_ask_deets(market, detail['name'], 20, 0.1)
+                    book_deets = get_best_bid_ask_deets(str(token), detail['name'], 20, 0.1)
                 
                 best_bid = round(book_deets['best_bid'], round_length) if book_deets['best_bid'] else 0
                 best_ask = round(book_deets['best_ask'], round_length) if book_deets['best_ask'] else 0
@@ -455,7 +457,8 @@ async def perform_trade(market):
                             can_buy = False
                     
                     if can_buy:
-                        price_change = abs(bid_price - row['best_bid'])
+                        # Bug 2 fix: 'best_bid' is a local var computed above — not a sheet column.
+                        price_change = abs(bid_price - best_bid) if best_bid else 0
                         if row['3_hour'] > params['volatility_threshold'] * 2 or price_change > 0.15:
                             client.cancel_all_asset(token)
                         else:

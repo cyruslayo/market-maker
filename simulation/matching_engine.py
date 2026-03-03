@@ -157,64 +157,93 @@ class LiveMatchingEngine:
         price = order["price"]
         size = order["size"]
         
-        cost = price * size
-        
         if market_id not in self.positions:
             self.positions[market_id] = {"size": 0, "avgPrice": 0.0}
             
         pos = self.positions[market_id]
-        
+        realized_pnl = 0.0
+
         if action == "BUY":
+            cost = price * size
             self.usdc_balance -= cost
             prev_size = pos["size"]
             prev_avg = pos["avgPrice"]
             new_size = prev_size + size
             new_avg = ((prev_size * prev_avg) + (size * price)) / new_size if new_size > 0 else 0
             self.positions[market_id] = {"size": new_size, "avgPrice": new_avg}
-            
+            # No realized P&L on a pure buy; it accrues when we sell.
+            realized_pnl = 0.0
+
         elif action == "SELL":
+            avg_cost = pos["avgPrice"]
+
             if pos["size"] >= size:
-                # Standard sell
+                # --- Standard sell of held tokens ---
                 self.positions[market_id]["size"] -= size
-                self.usdc_balance += cost
+                proceeds = price * size
+                self.usdc_balance += proceeds
+                # Realized P&L = proceeds minus cost basis of the shares sold
+                realized_pnl = proceeds - (avg_cost * size)
             else:
-                # Shorting - sell what we have, mint the rest
-                shorted_size = size - pos["size"]
-                
-                if pos["size"] > 0:
-                    self.usdc_balance += pos["size"] * price
+                # --- Partial sell + short (mint complementary token) ---
+                held = pos["size"]
+                shorted_size = size - held
+
+                # 1) Sell held tokens at the fill price
+                if held > 0:
+                    held_proceeds = held * price
+                    self.usdc_balance += held_proceeds
+                    realized_pnl += held_proceeds - (avg_cost * held)
                     self.positions[market_id]["size"] = 0
-                
+
+                # 2) Mint a complementary (NO) token pair and immediately sell the YES side
+                #    Cost to mint one pair = 1 USDC; we receive 1 YES + 1 NO.
+                #    We sell the YES at `price`, keeping the NO token.
+                #    Net cost of the NO token = 1 - price.
                 opp_token = global_state.REVERSE_TOKENS.get(market_id)
                 if opp_token:
-                    self.usdc_balance -= shorted_size * (1 - price)
-                    
+                    mint_cost = shorted_size * 1.0          # 1 USDC per pair
+                    yes_proceeds = shorted_size * price      # sell YES side immediately
+                    net_no_cost = mint_cost - yes_proceeds   # = shorted_size * (1 - price)
+                    self.usdc_balance -= net_no_cost
+
                     if opp_token not in self.positions:
                         self.positions[opp_token] = {"size": 0, "avgPrice": 0.0}
-                        
+
                     opp_pos = self.positions[opp_token]
                     o_prev_size = opp_pos["size"]
                     o_prev_avg = opp_pos["avgPrice"]
-                    o_price = (1 - price)
-                    
+                    o_price = 1.0 - price   # effective cost basis of the NO token
+
                     o_new_size = o_prev_size + shorted_size
                     o_new_avg = ((o_prev_size * o_prev_avg) + (shorted_size * o_price)) / o_new_size if o_new_size > 0 else 0
-                    
                     self.positions[opp_token] = {"size": o_new_size, "avgPrice": o_new_avg}
+                    # Realized P&L from the short-mint side = 0 (we just opened a new position)
                 else:
-                    self.positions[market_id]["size"] -= size
-                    self.usdc_balance += cost
+                    # No complement known – treat as naked sell, deduct position
+                    proceeds = price * size
+                    self.usdc_balance += proceeds
+                    realized_pnl += proceeds - (avg_cost * size)
+                    self.positions[market_id]["size"] = max(0, pos["size"] - size)
                     
-        logger.info(f"✅ PAPER FILL: {action} {size} of {market_id[:6]} @ {price}. USDC: {self.usdc_balance:.2f}")
+        logger.info(f"✅ PAPER FILL: {action} {size} of {market_id[:6]} @ {price}. USDC: {self.usdc_balance:.2f} | Realized P&L: ${realized_pnl:+.4f}")
 
-        self.trade_history.append({
+        fill_record = {
             "order_id": order_id,
             "market_id": market_id,
             "action": action,
             "price": price,
             "size": size,
             "timestamp": time.time(),
-            "latency_ms": order["latency_ms"]
+            "latency_ms": order["latency_ms"],
+            "realized_pnl": realized_pnl,
+        }
+        self.trade_history.append(fill_record)
+        self.pnl_history.append({
+            "timestamp": fill_record["timestamp"],
+            "realized_pnl": realized_pnl,
+            "cumulative_pnl": sum(r["realized_pnl"] for r in self.pnl_history) + realized_pnl,
+            "usdc_balance": self.usdc_balance,
         })
 
     # ==========================
@@ -222,9 +251,57 @@ class LiveMatchingEngine:
     # ==========================
     
     def get_usdc_balance(self): return self.usdc_balance
-        
+
     def get_pos_balance(self):
-        return sum([p["size"] * p["avgPrice"] for p in self.positions.values()])
+        """Returns position value at average cost basis (not current market price)."""
+        return sum(p["size"] * p["avgPrice"] for p in self.positions.values())
+
+    def get_mid_price(self, token_id: str) -> float | None:
+        """Returns the live mid-price for a token from the in-memory order book."""
+        try:
+            book = global_state.all_data.get(token_id)
+            if book is None:
+                return None
+            bids = book.get("bids", {})
+            asks = book.get("asks", {})
+            best_bid = max(bids.keys()) if bids else None
+            best_ask = min(asks.keys()) if asks else None
+            if best_bid is not None and best_ask is not None:
+                return (best_bid + best_ask) / 2.0
+            if best_bid is not None:
+                return best_bid
+            if best_ask is not None:
+                return best_ask
+        except Exception:
+            pass
+        return None
+
+    def get_pos_balance_mtm(self) -> float:
+        """Returns position value marked to live mid-price.
+        Falls back to average cost for tokens with no live book."""
+        total = 0.0
+        for token_id, pos in self.positions.items():
+            size = pos["size"]
+            if size <= 0:
+                continue
+            mid = self.get_mid_price(token_id)
+            price = mid if mid is not None else pos["avgPrice"]
+            total += size * price
+        return total
+
+    def get_pnl_summary(self) -> dict:
+        """Returns a snap-shot of realized P&L and current unrealized P&L."""
+        realized = sum(r["realized_pnl"] for r in self.pnl_history)
+        cost_basis = self.get_pos_balance()          # at avg cost
+        mtm_value  = self.get_pos_balance_mtm()      # at live mid
+        unrealized  = mtm_value - cost_basis
+        return {
+            "realized_pnl": realized,
+            "unrealized_pnl": unrealized,
+            "total_pnl": realized + unrealized,
+            "cost_basis": cost_basis,
+            "mtm_value": mtm_value,
+        }
 
     def get_all_positions(self):
         res = [{"asset": k, "size": v["size"], "avgPrice": v["avgPrice"]} 

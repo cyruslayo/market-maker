@@ -102,19 +102,31 @@ async def update_periodically():
                             if hourly_drop > 0.02 and len(hourly_history) > 10:  # > 2% hourly drawdown, require some history
                                 logger.critical(f"CIRCUIT BREAKER: 2% Hourly Drawdown! Dropped from {hourly_max:.2f} to {total_balance:.2f} ({hourly_drop:.2%})")
                                 global_state.trade_halt = True
+                                # Bug 4 fix: cancel_all() doesn't exist; cancel per-market using cancel_all_market()
                                 try:
-                                    global_state.client.cancel_all()
-                                except:
+                                    if global_state.df is not None:
+                                        for _cid in global_state.df['condition_id'].dropna().unique():
+                                            try:
+                                                global_state.client.cancel_all_market(str(_cid))
+                                            except Exception:
+                                                pass
+                                except Exception:
                                     pass
-                                
+
                         if daily_max > 0 and not getattr(global_state, 'trade_halt', False):
                             daily_drop = (daily_max - total_balance) / daily_max
                             if daily_drop > 0.05 and len(balance_history) > 10:  # > 5% daily drawdown
                                 logger.critical(f"CIRCUIT BREAKER: 5% Daily Drawdown! Dropped from {daily_max:.2f} to {total_balance:.2f} ({daily_drop:.2%})")
                                 global_state.trade_halt = True
+                                # Bug 4 fix: cancel_all() doesn't exist; cancel per-market using cancel_all_market()
                                 try:
-                                    global_state.client.cancel_all()
-                                except:
+                                    if global_state.df is not None:
+                                        for _cid in global_state.df['condition_id'].dropna().unique():
+                                            try:
+                                                global_state.client.cancel_all_market(str(_cid))
+                                            except Exception:
+                                                pass
+                                except Exception:
                                     pass
             except Exception as e:
                 logger.error(f"Error in circuit breaker logic: {e}")

@@ -41,31 +41,51 @@ load_dotenv()
 
 def print_paper_report():
     engine = global_state.client.matching_engine
-    
-    print("\n" + "="*50)
-    print("PAPER TRADING LATENCY & SLIPPAGE REPORT")
-    print("="*50)
-    print(f"Final USDC Balance: ${engine.usdc_balance:.2f}")
-    
-    total_pos_value = sum([p["size"] * p["avgPrice"] for p in engine.positions.values()])
-    print(f"Final Position Value: ${total_pos_value:.2f}")
-    print(f"Total Portfolio Value: ${engine.usdc_balance + total_pos_value:.2f}")
-    
+
+    pnl = engine.get_pnl_summary()
+    mtm_value  = pnl["mtm_value"]
+    cost_basis = pnl["cost_basis"]
+    realized   = pnl["realized_pnl"]
+    unrealized = pnl["unrealized_pnl"]
+    total_pnl  = pnl["total_pnl"]
+
+    total_portfolio_mtm = engine.usdc_balance + mtm_value
+
+    print("\n" + "="*55)
+    print("       PAPER TRADING REPORT")
+    print("="*55)
+
+    print("\n--- Portfolio Snapshot ---")
+    print(f"  USDC Balance:              ${engine.usdc_balance:>10.2f}")
+    print(f"  Position Value (cost):     ${cost_basis:>10.2f}")
+    print(f"  Position Value (MTM):      ${mtm_value:>10.2f}  ← live mid-price")
+    print(f"  Total Portfolio (MTM):     ${total_portfolio_mtm:>10.2f}")
+
+    print("\n--- P&L Breakdown ---")
+    sign = lambda v: "+" if v >= 0 else ""
+    print(f"  Realized P&L:    {sign(realized)}${realized:>8.4f}")
+    print(f"  Unrealized P&L:  {sign(unrealized)}${unrealized:>8.4f}  (MTM vs cost)")
+    print(f"  Total P&L:       {sign(total_pnl)}${total_pnl:>8.4f}")
+
     print("\n--- Execution Stats ---")
-    print(f"Successful Fills: {len(engine.trade_history)}")
-    
+    fills = len(engine.trade_history)
+    misses = len(engine.missed_fills)
+    miss_rate = misses / (fills + misses) * 100 if (fills + misses) > 0 else 0.0
+    print(f"  Successful Fills:          {fills}")
+    print(f"  Latency Misses:            {misses}  ({miss_rate:.1f}%)")
+
     if engine.missed_fills:
-        miss_rate = len(engine.missed_fills) / (len(engine.trade_history) + len(engine.missed_fills)) * 100
-    else:
-        miss_rate = 0.0
-        
-    print(f"Missed Fills (Latency rejected): {len(engine.missed_fills)} ({miss_rate:.1f}%)")
-    
-    if engine.missed_fills:
-        avg_latency = sum([m["latency_ms"] for m in engine.missed_fills]) / len(engine.missed_fills)
-        print(f"Average Latency on Misses: {avg_latency:.1f} ms")
-        
-    print("="*50 + "\n")
+        avg_latency = sum(m["latency_ms"] for m in engine.missed_fills) / misses
+        print(f"  Avg Latency on Misses:     {avg_latency:.1f} ms")
+
+    if engine.pnl_history:
+        best  = max(engine.pnl_history, key=lambda r: r["cumulative_pnl"])
+        worst = min(engine.pnl_history, key=lambda r: r["cumulative_pnl"])
+        print(f"\n--- P&L Trajectory ---")
+        print(f"  Peak Cumulative P&L:  ${best['cumulative_pnl']:>+.4f}")
+        print(f"  Trough Cumulative:    ${worst['cumulative_pnl']:>+.4f}")
+
+    print("="*55 + "\n")
 
 
 def update_paper_once():

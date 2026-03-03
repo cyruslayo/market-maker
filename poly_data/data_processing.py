@@ -51,6 +51,31 @@ def process_price_change(asset, side, price_level, new_size):
         book[price_level] = new_size
 
 
+def _resolve_condition_id(token_or_condition_id: str) -> str | None:
+    """
+    Bug 3 / Bug 5 fix: perform_trade() looks up df[condition_id == market], so it always
+    needs a condition_id.  The market WebSocket sends individual token IDs as 'market'.
+    This helper maps a token_id → condition_id via global_state.df when needed.
+    If the string is already a condition_id (present in df) it is returned unchanged.
+    """
+    if global_state.df is None or global_state.df.empty:
+        return token_or_condition_id
+
+    # Already a condition_id?
+    if token_or_condition_id in global_state.df['condition_id'].values:
+        return token_or_condition_id
+
+    # Try resolving as a token_id (token1 or token2)
+    match = global_state.df[
+        (global_state.df['token1'].astype(str) == token_or_condition_id) |
+        (global_state.df['token2'].astype(str) == token_or_condition_id)
+    ]
+    if not match.empty:
+        return match.iloc[0]['condition_id']
+
+    return None  # Unknown — let caller decide
+
+
 async def process_data(json_datas, trade=True):
     """Process WebSocket data, handling both single dict and list of dicts."""
     # Ensure json_datas is a list
@@ -89,8 +114,12 @@ async def process_data(json_datas, trade=True):
             if event_type == 'book':
                 process_book_data(asset, json_data)
                 if trade:
-                    # Always trade on book snapshot (initial data)
-                    await asyncio.create_task(perform_trade(asset))
+                    # Bug 3 fix: market WS sends token_id as 'market'; perform_trade needs condition_id.
+                    condition_id = _resolve_condition_id(asset)
+                    if condition_id:
+                        await asyncio.create_task(perform_trade(condition_id))
+                    else:
+                        logger.warning(f"Cannot resolve condition_id for book asset: {asset}")
             elif event_type == 'price_change':
                 # Check for 'price_changes' (new API) or 'changes' (legacy)
                 changes = json_data.get('price_changes') or json_data.get('changes', [])
@@ -105,19 +134,26 @@ async def process_data(json_datas, trade=True):
                     new_size = float(data['size'])
                     process_price_change(asset, side, price_level, new_size)
 
-                # Rate limit trading on price changes to reduce order churn
+                # Rate limit trading on price changes to reduce order churn.
+                # Bug 5 fix: use condition_id as the cooldown key so market-WS and user-WS
+                # rate-limiting share the same counter (perform_trade also uses condition_id).
                 if trade:
+                    condition_id = _resolve_condition_id(asset)
+                    if not condition_id:
+                        logger.warning(f"Cannot resolve condition_id for price_change asset: {asset}")
+                        continue
+
                     current_time = time.time()
-                    last_action = global_state.get_last_trade_action_time_atomic(asset)
+                    last_action = global_state.get_last_trade_action_time_atomic(condition_id)
                     time_since_last_action = current_time - last_action
 
                     # Only trigger trading if 30 seconds have passed since last action
                     if time_since_last_action >= 30:
-                        global_state.set_last_trade_action_time_atomic(asset, current_time)
-                        logger.info(f"Triggering trade for {asset} after {time_since_last_action:.1f}s cooldown")
-                        await asyncio.create_task(perform_trade(asset))
+                        global_state.set_last_trade_action_time_atomic(condition_id, current_time)
+                        logger.info(f"Triggering trade for {condition_id} after {time_since_last_action:.1f}s cooldown")
+                        await asyncio.create_task(perform_trade(condition_id))
                     else:
-                        logger.debug(f"Skipping trade for {asset}, cooldown: {30 - time_since_last_action:.1f}s remaining")
+                        logger.debug(f"Skipping trade for {condition_id}, cooldown: {30 - time_since_last_action:.1f}s remaining")
             else:
                 logger.warning(f"Unhandled event_type: {event_type}")
         except Exception as e:
