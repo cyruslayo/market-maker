@@ -154,8 +154,16 @@ async def process_data(json_datas, trade=True):
                         await asyncio.create_task(perform_trade(condition_id))
                     else:
                         logger.debug(f"Skipping trade for {condition_id}, cooldown: {30 - time_since_last_action:.1f}s remaining")
+            elif event_type == 'last_trade_price':
+                # Broadcast of the most recently executed trade price for this market.
+                # Store it in all_data so perform_trade can use it as a reference signal.
+                price = json_data.get('price')
+                if price is not None:
+                    initialize_market_data(asset)
+                    global_state.all_data[asset]['last_trade_price'] = float(price)
+                    logger.debug(f"last_trade_price for {asset}: {price}")
             else:
-                logger.warning(f"Unhandled event_type: {event_type}")
+                logger.debug(f"Unhandled event_type: {event_type}")
         except Exception as e:
             logger.error(f"Error processing data: {e}, json_data: {json_data}", exc_info=True)
 

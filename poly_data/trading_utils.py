@@ -46,7 +46,52 @@ def get_clob_client():
         signature_type=2
     )
 
+def _resolve_all_data_key(token_id: str) -> str | None:
+    """
+    Resolve a token ID to the actual key used in global_state.all_data.
+
+    The WebSocket sends market IDs in 0x-hex form (e.g. '0x753b97e8...') while
+    the DB stores them as large decimal integers. Both forms represent the same
+    256-bit number. Try both representations so lookups always succeed regardless
+    of which format was used when the book was first stored.
+    """
+    if token_id in global_state.all_data:
+        return token_id  # already correct (decimal form)
+
+    # Try: decimal string → 0x-hex string
+    try:
+        hex_form = hex(int(token_id))   # '0xabc...'
+        if hex_form in global_state.all_data:
+            return hex_form
+    except (ValueError, TypeError):
+        pass
+
+    # Try: 0x-hex string → decimal string
+    if token_id.startswith('0x') or token_id.startswith('0X'):
+        try:
+            dec_form = str(int(token_id, 16))
+            if dec_form in global_state.all_data:
+                return dec_form
+        except (ValueError, TypeError):
+            pass
+
+    return None  # not found in either form
+
+
 def get_best_bid_ask_deets(market, name, size, deviation_threshold=0.05):
+    # Normalize market key: WS may store books under 0x-hex while the caller
+    # passes a decimal token ID (or vice-versa). Resolve to whichever form exists.
+    resolved = _resolve_all_data_key(market)
+    if resolved is None:
+        # Book not yet received for this token — return empty deets gracefully
+        return {
+            'best_bid': None, 'best_bid_size': 0,
+            'best_ask': None, 'best_ask_size': 0,
+            'top_bid': None, 'top_ask': None,
+            'second_best_bid': None, 'second_best_ask': None,
+            'bid_sum_within_n_percent': 0, 'ask_sum_within_n_percent': 0,
+        }
+    market = resolved
 
     best_bid, best_bid_size, second_best_bid, second_best_bid_size, top_bid = find_best_price_with_size(global_state.all_data[market]['bids'], size, reverse=True)
     best_ask, best_ask_size, second_best_ask, second_best_ask_size, top_ask = find_best_price_with_size(global_state.all_data[market]['asks'], size, reverse=False)

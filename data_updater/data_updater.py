@@ -246,15 +246,38 @@ def process_single_row(row, client):
         book = client.get_order_book(token1)
     except:
         book = type('obj', (object,), {'bids': [], 'asks': []})()
-    bids = pd.DataFrame()
-    asks = pd.DataFrame()
+    _EMPTY_BOOK = pd.DataFrame(columns=['price', 'size']).astype({'price': float, 'size': float})
+    bids = _EMPTY_BOOK.copy()
+    asks = _EMPTY_BOOK.copy()
+
+    def _book_entries_to_df(entries):
+        """Convert a list of CLOB OrderSummary objects (or dicts) to a price/size DataFrame."""
+        if not entries:
+            return pd.DataFrame(columns=['price', 'size']).astype({'price': float, 'size': float})
+        rows = []
+        for e in entries:
+            try:
+                # OrderSummary objects expose .price and .size as string attributes
+                rows.append({'price': float(e.price), 'size': float(e.size)})
+            except AttributeError:
+                try:
+                    rows.append({'price': float(e['price']), 'size': float(e['size'])})
+                except (KeyError, TypeError):
+                    pass
+        if rows:
+            df = pd.DataFrame(rows)
+        else:
+            df = pd.DataFrame(columns=['price', 'size'])
+        # Always enforce float64 so merges on 'price' don't hit dtype mismatches
+        return df.astype({'price': float, 'size': float})
+
     try:
-        bids = pd.DataFrame(book.bids).astype(float)
-    except:
+        bids = _book_entries_to_df(book.bids)
+    except Exception:
         pass
     try:
-        asks = pd.DataFrame(book.asks).astype(float)
-    except:
+        asks = _book_entries_to_df(book.asks)
+    except Exception:
         pass
     try:
         ret['best_bid'] = bids.iloc[-1]['price'] if not bids.empty else 0
@@ -273,8 +296,8 @@ def process_single_row(row, client):
     ret['tick_size'] = TICK_SIZE
     bid_from, bid_to, ask_from, ask_to = get_bid_ask_range(ret, TICK_SIZE)
     v = round((ret['max_spread'] / 100), 2)
-    bids_df = pd.DataFrame({'price': generate_numbers(bid_from, bid_to, TICK_SIZE), 'size': 0})
-    asks_df = pd.DataFrame({'price': generate_numbers(ask_from, ask_to, TICK_SIZE), 'size': 0})
+    bids_df = pd.DataFrame({'price': generate_numbers(bid_from, bid_to, TICK_SIZE), 'size': 0.0}).astype({'price': float})
+    asks_df = pd.DataFrame({'price': generate_numbers(ask_from, ask_to, TICK_SIZE), 'size': 0.0}).astype({'price': float})
     try:
         bids_df = bids_df.merge(bids, on='price', how='left', suffixes=('', '_book')).fillna(0)
         if 'size_book' in bids_df.columns:
