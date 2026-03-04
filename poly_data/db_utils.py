@@ -136,6 +136,12 @@ def init_db():
     conn.close()
     logger.info("[OK] SQLite database initialized successfully.")
 
+# Auto-initialize database on import
+try:
+    init_db()
+except Exception as e:
+    logger.error(f"Critical error during database initialization: {e}")
+
 def get_target_markets() -> pd.DataFrame:
     """Returns all active target markets as a pandas DataFrame."""
     conn = get_connection()
