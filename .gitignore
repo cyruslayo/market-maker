@@ -5,6 +5,8 @@ credentials.json
 .env
 .env.*
 positions/
+polymarket.db
+*.log
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
