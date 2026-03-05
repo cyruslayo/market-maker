@@ -8,6 +8,10 @@ import time
 from trading import perform_trade
 from poly_data.data_utils import set_position, set_order, update_positions
 
+# Heartbeat counter for market data processing
+_ws_message_count = 0
+_ws_trade_trigger_count = 0
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -78,12 +82,17 @@ def _resolve_condition_id(token_or_condition_id: str) -> str | None:
 
 async def process_data(json_datas, trade=True):
     """Process WebSocket data, handling both single dict and list of dicts."""
+    global _ws_message_count, _ws_trade_trigger_count
     # Ensure json_datas is a list
     if isinstance(json_datas, dict):
         json_datas = [json_datas]
 
     for json_data in json_datas:
         try:
+            _ws_message_count += 1
+            if _ws_message_count % 100 == 0:
+                logger.info(f"📡 WebSocket heartbeat: {_ws_message_count} messages received, {_ws_trade_trigger_count} trade triggers fired")
+
             if not isinstance(json_data, dict):
                 logger.error(f"Expected dict, got {type(json_data)}: {json_data}")
                 continue
@@ -117,6 +126,7 @@ async def process_data(json_datas, trade=True):
                     # Bug 3 fix: market WS sends token_id as 'market'; perform_trade needs condition_id.
                     condition_id = _resolve_condition_id(asset)
                     if condition_id:
+                        _ws_trade_trigger_count += 1
                         await asyncio.create_task(perform_trade(condition_id))
                     else:
                         logger.warning(f"Cannot resolve condition_id for book asset: {asset}")
@@ -150,6 +160,7 @@ async def process_data(json_datas, trade=True):
                     # Only trigger trading if 30 seconds have passed since last action
                     if time_since_last_action >= 30:
                         global_state.set_last_trade_action_time_atomic(condition_id, current_time)
+                        _ws_trade_trigger_count += 1
                         logger.info(f"Triggering trade for {condition_id} after {time_since_last_action:.1f}s cooldown")
                         await asyncio.create_task(perform_trade(condition_id))
                     else:

@@ -197,7 +197,24 @@ async def main():
         logger.error(f"Failed to load initial market data: {e}")
         return
 
-    logger.info(f"Subscribing to WebSocket for {len(global_state.subscribed_assets)} tokens")
+    # ====== DIAGNOSTIC CHECK ======
+    if global_state.df is None or global_state.df.empty:
+        logger.error("=" * 60)
+        logger.error("⛔ CRITICAL: No markets loaded! The bot has nothing to trade.")
+        logger.error("   If MOCK_SHEETS=true: run data_updater.py first to populate the DB.")
+        logger.error("   If MOCK_SHEETS=false: run update_selected_markets.py first.")
+        logger.error("=" * 60)
+        return
+
+    if not global_state.subscribed_assets:
+        logger.error("⛔ CRITICAL: subscribed_assets is empty! WebSocket will receive no data.")
+        return
+
+    logger.info(f"✅ Loaded {len(global_state.df)} markets for trading")
+    logger.info(f"✅ Subscribing to WebSocket for {len(global_state.subscribed_assets)} tokens")
+    for _, row in global_state.df.iterrows():
+        logger.info(f"   📊 {row.get('question', 'N/A')[:60]}")
+    # ==============================
 
     asyncio.create_task(paper_update_loop())
     asyncio.create_task(paper_merger_loop())
